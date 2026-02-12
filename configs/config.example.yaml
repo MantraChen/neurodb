@@ -1,0 +1,13 @@
+server:
+  addr: ":4000"
+
+storage:
+  driver: "sqlite"        # 支持: sqlite/mysql/postgres (后续实现)
+  dsn: "file:neurodb.db"  # 示例 DSN
+
+sql_proxy:
+  protocol: "mysql"       # 支持: mysql/pg (后续实现)
+
+log:
+  level: "info"
+
