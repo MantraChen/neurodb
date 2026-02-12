@@ -37,9 +37,6 @@ func NewSQLiteBackend(path string) *SQLiteBackend {
 		log.Fatalf("Failed to init table: %v", err)
 	}
 
-	// === 性能优化关键点 ===
-	// 1. WAL 模式：允许读写并发
-	// 2. synchronous = OFF：不做磁盘同步等待 (极速写入，但在演示中非常安全)
 	_, err = db.Exec(`
 		PRAGMA journal_mode = WAL;
 		PRAGMA synchronous = OFF; 
