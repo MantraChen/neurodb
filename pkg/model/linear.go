@@ -53,3 +53,32 @@ func (lm *LinearModel) Train(keys []common.KeyType) {
 func (lm *LinearModel) Predict(key common.KeyType) int {
 	return int(lm.Slope*float64(key) + lm.Intercept)
 }
+
+// TrainWithPos 允许传入自定义的 Y 坐标 (即全局位置) 进行训练
+func (lm *LinearModel) TrainWithPos(keys []common.KeyType, positions []int) {
+	if len(keys) == 0 {
+		return
+	}
+
+	n := float64(len(keys))
+	var sumX, sumY, sumXY, sumXX float64
+
+	for i, key := range keys {
+		x := float64(key)
+		y := float64(positions[i]) // 使用传入的真实位置
+
+		sumX += x
+		sumY += y
+		sumXY += x * y
+		sumXX += x * x
+	}
+
+	denominator := n*sumXX - sumX*sumX
+	if denominator == 0 {
+		lm.Slope = 0
+		lm.Intercept = 0
+	} else {
+		lm.Slope = (n*sumXY - sumX*sumY) / denominator
+		lm.Intercept = (sumY - lm.Slope*sumX) / n
+	}
+}

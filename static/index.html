@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NeuroDB Console</title>
+    <style>
+        :root {
+            --bg-color: #050505;
+            --card-bg: #0a0f14;
+            --border-color: #30363d;
+            --text-main: #c9d1d9;
+            --text-dim: #8b949e;
+            --accent-green: #00ff41; /* Matrix Green */
+            --accent-blue: #00f3ff;  /* Cyber Cyan */
+            --accent-purple: #bc00ff;
+            --accent-yellow: #ffbf00;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace; /* 纯等宽字体 */
+            margin: 0;
+            padding: 20px;
+            background-image: radial-gradient(circle at 50% 0, #161b22 0%, #050505 70%);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* 标题栏 */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 15px;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+            color: var(--text-main);
+            text-shadow: 0 0 10px rgba(0, 243, 255, 0.3);
+            letter-spacing: 1px;
+        }
+        
+        .badge {
+            background: #1f6feb;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            vertical-align: middle;
+            margin-left: 10px;
+        }
+
+        /* 网格布局 */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 20px;
+            position: relative;
+            transition: transform 0.2s, box-shadow 0.2s;
+            overflow: hidden;
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5);
+            border-color: #58a6ff;
+        }
+
+        /* 霓虹边框装饰 */
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 4px; height: 100%;
+            background: var(--border-color);
+        }
+        .card.status-ok::before { background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green); }
+        .card.status-warn::before { background: var(--accent-yellow); box-shadow: 0 0 8px var(--accent-yellow); }
+        .card.status-info::before { background: var(--accent-blue); box-shadow: 0 0 8px var(--accent-blue); }
+
+        .card h3 { margin: 0 0 10px 0; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+        .card .value { font-size: 28px; font-weight: bold; color: #fff; margin-bottom: 5px; }
+        .card .sub { font-size: 12px; color: var(--text-dim); }
+
+        /* 跑分面板特别样式 */
+        .benchmark-panel {
+            grid-column: span 2; /* 占据两列 */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        @media (max-width: 800px) { .benchmark-panel { grid-column: span 1; } }
+
+        .bench-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+        .bench-label { width: 80px; color: var(--text-dim); }
+        .bench-bar-bg { flex: 1; height: 8px; background: #21262d; border-radius: 4px; margin: 0 10px; overflow: hidden; }
+        .bench-bar { height: 100%; width: 0%; border-radius: 4px; transition: width 1s ease-out; }
+        .bench-val { width: 80px; text-align: right; font-family: monospace; }
+        
+        .speedup-badge {
+            position: absolute;
+            right: 20px; top: 20px;
+            text-align: right;
+        }
+        .speedup-val { font-size: 32px; color: var(--accent-green); font-weight: bold; text-shadow: 0 0 15px rgba(0,255,65,0.4); }
+
+        /* 控制台与日志 */
+        .layout-split {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 800px) { .layout-split { grid-template-columns: 1fr; } }
+
+        .panel-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;
+        }
+        
+        /* 输入框组 */
+        .input-group {
+            display: flex;
+            margin-bottom: 15px;
+        }
+        input {
+            flex: 1;
+            background: #0d1117;
+            border: 1px solid var(--border-color);
+            border-right: none;
+            color: white;
+            padding: 10px;
+            border-radius: 6px 0 0 6px;
+            font-family: inherit;
+            outline: none;
+        }
+        input:focus { border-color: var(--accent-blue); }
+        
+        button {
+            background: #21262d;
+            border: 1px solid var(--border-color);
+            color: white;
+            padding: 0 15px;
+            cursor: pointer;
+            border-radius: 0 6px 6px 0;
+            font-weight: bold;
+            transition: all 0.2s;
+            text-transform: uppercase;
+            font-size: 12px;
+        }
+        button:hover:not(:disabled) { background: #30363d; border-color: var(--text-dim); }
+        button:active:not(:disabled) { transform: translateY(1px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-green { background: #238636; border-color: #238636; }
+        .btn-green:hover:not(:disabled) { background: #2ea043; }
+        
+        .btn-blue { background: #1f6feb; border-color: #1f6feb; }
+        .btn-blue:hover:not(:disabled) { background: #388bfd; }
+
+        .btn-yellow { background: #9e6a03; border-color: #9e6a03; } /* 暗黄色防止刺眼 */
+        .btn-yellow:hover:not(:disabled) { background: #d29922; }
+
+        .btn-purple { background: #8957e5; border-color: #8957e5; }
+        .btn-purple:hover:not(:disabled) { background: #a371f7; }
+
+        /* 日志窗口 */
+        #log {
+            height: 300px;
+            background: #000;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 12px;
+            line-height: 1.5;
+            overflow-y: auto;
+            color: var(--accent-green);
+            font-family: 'Consolas', monospace;
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.8);
+        }
+        .log-entry { margin-bottom: 4px; border-bottom: 1px solid #111; padding-bottom: 2px; }
+        .log-time { color: #555; margin-right: 8px; }
+        .log-err { color: #ff5555; }
+        .log-sys { color: var(--accent-blue); }
+
+        /* 进度条 */
+        .progress-track {
+            height: 4px; background: #21262d; width: 100%; margin-top: 20px; position: relative;
+        }
+        .progress-fill {
+            height: 100%; background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple)); width: 0%;
+            transition: width 0.5s; box-shadow: 0 0 10px var(--accent-blue);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>NEURO_DB <span class="badge">v1.0-RC</span></h1>
+            <div style="text-align: right; font-size: 12px; color: var(--text-dim);">
+                STATUS: <span style="color: var(--accent-green);">ONLINE</span><br>
+                PORT: 8080
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card status-info" id="cardMode">
+                <h3>System Mode</h3>
+                <div class="value" id="mode" style="font-size: 18px; line-height: 1.2;">Initializing...</div>
+                <div class="sub">Adaptive Optimizer</div>
+            </div>
+
+            <div class="card status-warn">
+                <h3>MemTable Size</h3>
+                <div class="value" id="memSize">0</div>
+                <div class="sub">Records in B-Tree (C0)</div>
+            </div>
+
+            <div class="card status-ok">
+                <h3>Learned Index</h3>
+                <div class="value" id="learnedCount">0</div>
+                <div class="sub" id="modelType">No Models</div>
+            </div>
+
+            <div class="card">
+                <h3>R/W Ratio</h3>
+                <div class="value" id="ratio" style="color: var(--accent-yellow);">0.00</div>
+                <div class="sub">Reads / Writes</div>
+                <div class="progress-track"><div class="progress-fill" id="ratioBar"></div></div>
+            </div>
+        </div>
+
+        <div class="layout-split">
+            <div>
+                <div class="card" style="margin-bottom: 20px; padding: 15px;">
+                    <h3>Data Injection</h3>
+                    <div class="input-group">
+                        <input type="number" id="writeKey" placeholder="Key (e.g. 101)">
+                        <input type="text" id="writeVal" placeholder="Value">
+                        <button class="btn-green" onclick="doPut()">Write</button>
+                    </div>
+                    <button class="btn-yellow" onclick="triggerIngest()" style="width: 100%; border-radius: 6px;">
+                         Auto Ingest 50k
+                    </button>
+                </div>
+
+                <div class="card" style="padding: 15px;">
+                    <h3>Query Engine</h3>
+                    <div class="input-group">
+                        <input type="number" id="readKey" placeholder="Search Key...">
+                        <button class="btn-blue" onclick="doGet()">Query</button>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px; padding: 15px; border-color: var(--accent-purple);">
+                    <h3 style="color: var(--accent-purple);">Tools</h3>
+                    <button class="btn-purple" onclick="downloadCSV()" style="width: 100%; border-radius: 6px;">
+                         Download Experiment CSV
+                    </button>
+                </div>
+            </div>
+
+            <div>
+                <div class="card benchmark-panel status-info" style="margin-bottom: 20px;">
+                    <div class="panel-header">
+                        <h3>Performance Benchmark (Latency)</h3>
+                        </div>
+                    
+                    <div class="speedup-badge">
+                        <div class="sub">SPEEDUP</div>
+                        <div class="speedup-val" id="benchSpeed">0.0x</div>
+                    </div>
+
+                    <div class="bench-row">
+                        <div class="bench-label">B-Tree</div>
+                        <div class="bench-bar-bg"><div class="bench-bar" id="barB" style="background: #8b949e;"></div></div>
+                        <div class="bench-val" id="valB">-- ns</div>
+                    </div>
+                    <div class="bench-row">
+                        <div class="bench-label" style="color: var(--accent-green); font-weight: bold;">NeuroDB</div>
+                        <div class="bench-bar-bg"><div class="bench-bar" id="barAI" style="background: var(--accent-green);"></div></div>
+                        <div class="bench-val" id="valAI" style="color: var(--accent-green); font-weight: bold;">-- ns</div>
+                    </div>
+
+                    <button class="btn-blue" onclick="runBenchmark()" id="btnBench" style="width: 100%; margin-top: 15px; padding: 12px; font-size: 14px; letter-spacing: 1px; border-radius: 6px;">
+                         RUN PERFORMANCE TEST
+                    </button>
+                </div>
+
+                <div class="panel-header" style="margin-bottom: 5px;">
+                    <h3 style="font-size: 12px; color: #8b949e; margin:0;">SYSTEM LOGS</h3>
+                    <button onclick="clearLog()" style="background:none; border:none; color: #555; font-size: 10px;">CLEAR</button>
+                </div>
+                <div id="log">
+                    <div class="log-entry"><span class="log-time">SYSTEM</span>Ready. Waiting for connection...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function log(msg, type = 'info') {
+            const el = document.getElementById('log');
+            const time = new Date().toLocaleTimeString('en-US', {hour12: false});
+            let className = 'log-entry';
+            if (type === 'error') className += ' log-err';
+            if (type === 'sys') className += ' log-sys';
+            
+            el.innerHTML += `<div class="${className}"><span class="log-time">[${time}]</span>${msg}</div>`;
+            el.scrollTop = el.scrollHeight; // Auto scroll
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        async function updateStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                
+                // Mode
+                const modeEl = document.getElementById('mode');
+                modeEl.innerText = data.mode;
+                if (data.mode.includes("AI")) {
+                    modeEl.style.color = "var(--accent-green)";
+                    document.getElementById('cardMode').className = "card status-ok";
+                } else {
+                    modeEl.style.color = "var(--accent-yellow)";
+                    document.getElementById('cardMode').className = "card status-warn";
+                }
+
+                document.getElementById('memSize').innerText = data.memtable_record_count.toLocaleString();
+                document.getElementById('learnedCount').innerText = data.learned_indexes_count;
+                document.getElementById('ratio').innerText = parseFloat(data.rw_ratio).toFixed(2);
+                
+                if (data.model_type) document.getElementById('modelType').innerText = data.model_type;
+
+                // Progress Bar (Max 1.0)
+                let pct = Math.min(data.rw_ratio * 100, 100);
+                document.getElementById('ratioBar').style.width = pct + "%";
+
+            } catch (e) {
+                // console.error(e); 
+            }
+        }
+
+        async function doPut() {
+            const k = parseInt(document.getElementById('writeKey').value);
+            const v = document.getElementById('writeVal').value;
+            if (!k || !v) return;
+
+            try {
+                const res = await fetch('/api/put', {
+                    method: 'POST',
+                    body: JSON.stringify({key: k, value: v})
+                });
+                if (res.ok) {
+                    log(`WRITE: Key=${k} OK`);
+                    document.getElementById('writeKey').value = k + 1;
+                }
+            } catch (e) { log(e, 'error'); }
+        }
+
+        async function doGet() {
+            const k = document.getElementById('readKey').value;
+            if (!k) return;
+            try {
+                const start = performance.now();
+                const res = await fetch(`/api/get?key=${k}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    log(`QUERY HIT: Key=${k} => "${data.value}" (${data.latency_ns}ns)`, 'sys');
+                } else {
+                    log(`QUERY MISS: Key=${k}`, 'error');
+                }
+            } catch (e) { log(e, 'error'); }
+        }
+
+        async function triggerIngest() {
+    if (!confirm("Start background ingestion (50k records)?\nNote: This simulates READ workload to force AI training.")) return;
+    
+    log("Starting Auto Ingest... Please wait ~5 seconds for Flush.", 'sys');
+    
+    // 禁用按钮防止重复点击
+    const btn = document.querySelector('button[onclick="triggerIngest()"]');
+    btn.disabled = true;
+    btn.innerText = "INGESTING...";
+
+    try {
+        await fetch('/api/ingest', { method: 'POST' });
+        
+        // 5秒后恢复按钮
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerText = " Auto Ingest 50k";
+            log("Ingest command sent. Check 'Learned Index' count.", 'sys');
+        }, 5000);
+
+    } catch (e) { log(e, 'error'); btn.disabled = false; }
+}
+
+        function downloadCSV() {
+            window.location.href = "/api/export";
+            log("Downloading CSV...", 'sys');
+        }
+
+        async function runBenchmark() {
+            const btn = document.getElementById('btnBench');
+            btn.innerText = "TESTING...";
+            btn.disabled = true;
+
+            // Reset Bars
+            document.getElementById('barB').style.width = "0%";
+            document.getElementById('barAI').style.width = "0%";
+
+            try {
+                const res = await fetch('/api/benchmark');
+                const data = await res.json();
+                if (data.error) { alert(data.error); return; }
+
+                // Parse "123.45 ns" to float
+                const valB = parseFloat(data.btree_avg_ns);
+                const valAI = parseFloat(data.ai_avg_ns);
+                const speedup = parseFloat(data.speedup);
+
+                document.getElementById('valB').innerText = data.btree_avg_ns;
+                document.getElementById('valAI').innerText = data.ai_avg_ns;
+                document.getElementById('benchSpeed').innerText = speedup.toFixed(2) + "x";
+
+                // Animate Bars (Relative width)
+                const max = Math.max(valB, valAI);
+                document.getElementById('barB').style.width = (valB / max * 100) + "%";
+                document.getElementById('barAI').style.width = (valAI / max * 100) + "%";
+
+                log(`BENCH: Speedup ${data.speedup}`, 'sys');
+
+            } catch (e) { log(e, 'error'); } 
+            finally {
+                btn.innerText = "Run Test";
+                btn.disabled = false;
+            }
+        }
+
+        setInterval(updateStats, 1000);
+        updateStats();
+    </script>
+</body>
+</html>

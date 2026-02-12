@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"log"
 	"neurodb/pkg/common"
 	"neurodb/pkg/core/learned"
@@ -151,4 +152,49 @@ func (hs *HybridStore) DebugPrint() {
 	defer hs.mutex.RUnlock()
 	log.Printf("Store Status: MemTable: %d, Learned Layers: %d",
 		hs.mutableMem.Count(), len(hs.learnedIndexes))
+}
+
+func (hs *HybridStore) Stats() map[string]interface{} {
+	hs.mutex.RLock()
+	defer hs.mutex.RUnlock()
+
+	ratio := hs.stats.GetReadWriteRatio()
+	memSize := hs.mutableMem.Size()
+	learnedCount := len(hs.learnedIndexes)
+
+	return map[string]interface{}{
+		"memtable_size_bytes":   memSize,
+		"memtable_record_count": hs.mutableMem.Count(),
+		"learned_indexes_count": learnedCount,
+		"model_type":            "2-Layer RMI (Linear)",
+		"rw_ratio":              ratio,
+		"total_reads":           hs.stats.ReadCount,
+		"total_writes":          hs.stats.WriteCount,
+		"mode": func() string {
+			if ratio > 0.01 {
+				return "Read-Intensive (AI Mode)"
+			} else {
+				return "Write-Intensive (Fast Mode)"
+			}
+		}(),
+	}
+}
+
+type ModelDataPoint struct {
+	Key          int64
+	RealPos      int
+	PredictedPos int
+	Error        int
+}
+
+func (hs *HybridStore) ExportModelData() ([]learned.DiagnosticPoint, error) {
+	hs.mutex.RLock()
+	defer hs.mutex.RUnlock()
+
+	if len(hs.learnedIndexes) == 0 {
+		return nil, fmt.Errorf("no learned indexes available (try writing more data > 50k)")
+	}
+
+	latestIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
+	return latestIndex.ExportDiagnostics(), nil
 }
