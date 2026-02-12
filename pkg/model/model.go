@@ -1,5 +1,10 @@
 package model
 
-// Package model 提供线性回归、神经网络、RMI 等模型的抽象与实现，
-// 用于构建学习型索引与代价估计器。
+//The model defines how Keys are mapped to Positions.
 
+type Model interface {
+	Traom(keys []int64) error    //Training
+	Predict(Key int64) (pos int) //Predicted position
+	ErrorBound() (min, max int)  //Error range(used for final step search)
+	SizeInBytes() int            //Model size (used for cost evaluation)
+}
