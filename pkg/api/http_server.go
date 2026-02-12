@@ -50,14 +50,13 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		"key":        keyInt,
 		"value":      string(val),
 		"found":      true,
-		"latency_ns": duration.Nanoseconds(), // 返回纳秒级延迟，方便演示
+		"latency_ns": duration.Nanoseconds(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
-// handlePut 处理写入请求: POST /put Body: {"key": 123, "value": "abc"}
 func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -79,9 +78,6 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-// handleStats 返回数据库内部状态
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	// 这里你需要去 pkg/core/hybrid_store.go 给 HybridStore 加一个简单的 Status() 方法返回 map
-	// 暂时先返回简单信息
 	w.Write([]byte("NeuroDB is running. Use /get or /put."))
 }
