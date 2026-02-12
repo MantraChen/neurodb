@@ -5,43 +5,87 @@ import (
 	"log"
 	"neurodb/pkg/common"
 	"neurodb/pkg/core"
+	"os"
 	"time"
 )
 
 func main() {
-	log.Println("Starting NeuroDB with Learned Index Support...")
-	store := core.NewHybridStore()
+	dbFile := "neuro.db"
 
-	// 1. 写入 12万条数据
-	// 我们的阈值是 5万，所以预期会触发 2 次 Flush，内存里剩 2万
-	total := 120000
-	log.Printf("Simulating ingestion of %d records...", total)
+	// 为了测试自适应流程，我们需要一个干净的环境
+	// 每次运行时删除旧数据库，确保从零开始统计工作负载
+	os.Remove(dbFile)
+
+	log.Println("[Main] Starting NeuroDB Adaptive Workload Test...")
+	store := core.NewHybridStore(dbFile)
+	defer store.Close()
+
+	// ==========================================
+	// 阶段 1: 模拟写密集型负载 (Write-Heavy)
+	// ==========================================
+	log.Println("[Main] Phase 1: Starting Write-Heavy Workload (Expect: Skip Training)...")
 
 	start := time.Now()
-	for i := 0; i < total; i++ {
+	// 写入 60,000 条数据
+	// 我们的 Flush 阈值是 50,000，所以这里会触发第一次 Flush
+	// 此时 ReadCount = 0, WriteCount = 50000, Ratio = 0.0
+	for i := 0; i < 60000; i++ {
 		key := common.KeyType(i)
 		val := []byte(fmt.Sprintf("val-%d", i))
 		store.Put(key, val)
-	}
-	log.Printf("Ingestion complete in %v", time.Since(start))
 
-	store.DebugPrint() // 预期：2 Learned Indexes, MemTable has 20000
-
-	// 2. 验证数据完整性
-	// Key 10000 (应该在第一个 Learned Index)
-	// Key 60000 (应该在第二个 Learned Index)
-	// Key 110000 (应该在 MemTable)
-	checkKeys := []int{10000, 60000, 110000}
-
-	for _, k := range checkKeys {
-		key := common.KeyType(k)
-		startQuery := time.Now()
-		val, found := store.Get(key)
-		duration := time.Since(startQuery)
-
-		if !found {
-			log.Fatalf("Critical: Key %d not found!", key)
+		if i%5000 == 0 {
+			fmt.Printf("\r[Main] Ingesting Phase 1... %d/60000", i)
 		}
-		log.Printf("Query Key %-6d -> Found! (Time: %v, Val: %s)", key, duration, string(val))
 	}
+	fmt.Println() // 换行
+	log.Printf("[Main] Phase 1 Complete in %v", time.Since(start))
+
+	// ==========================================
+	// 阶段 2: 模拟读密集型负载 (Read-Heavy)
+	// ==========================================
+	log.Println("[Main] Phase 2: Starting Read-Heavy Workload to shift stats...")
+
+	// 模拟 20,000 次查询
+	// 这将改变内部 Monitor 的读写比率 (R/W Ratio)
+	startRead := time.Now()
+	for i := 0; i < 20000; i++ {
+		// 查询刚才写入的 Key
+		store.Get(common.KeyType(i % 60000))
+	}
+	log.Printf("[Main] Phase 2 Complete in %v. Workload stats updated.", time.Since(startRead))
+
+	// ==========================================
+	// 阶段 3: 触发下一次 Flush (Adaptive Check)
+	// ==========================================
+	log.Println("[Main] Phase 3: Continuing ingestion (Expect: Train Model)...")
+
+	// 继续写入 60,000 条数据 (ID 从 60000 到 120000)
+	// 这将再次触发 Flush。此时读写比应该已经升高，超过阈值。
+	start = time.Now()
+	for i := 60000; i < 120000; i++ {
+		key := common.KeyType(i)
+		val := []byte(fmt.Sprintf("val-%d", i))
+		store.Put(key, val)
+
+		if i%5000 == 0 {
+			fmt.Printf("\r[Main] Ingesting Phase 3... %d/120000", i)
+		}
+	}
+	fmt.Println()
+	log.Printf("[Main] Phase 3 Complete in %v", time.Since(start))
+
+	// ==========================================
+	// 验证查询
+	// ==========================================
+	log.Println("[Main] Verifying Data Access...")
+	verifyKey := common.KeyType(100000)
+	val, found := store.Get(verifyKey)
+	if found {
+		log.Printf("[Main] Success: Key %d -> %s", verifyKey, string(val))
+	} else {
+		log.Printf("[Error] Key %d not found", verifyKey)
+	}
+
+	log.Println("[Main] Test Finished.")
 }
