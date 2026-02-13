@@ -1,9 +1,11 @@
 package learned
 
 import (
+	"math/rand"
 	"neurodb/pkg/common"
 	"neurodb/pkg/model"
 	"sort"
+	"time"
 )
 
 type DiagnosticPoint struct {
@@ -101,4 +103,52 @@ func (li *LearnedIndex) ExportDiagnostics() []DiagnosticPoint {
 		}
 	}
 	return results
+}
+
+func (li *LearnedIndex) BenchmarkInternal(iterations int) (float64, float64, error) {
+	if len(li.records) == 0 {
+		return 0, 0, nil
+	}
+
+	// 准备随机 Key 列表，确保公平
+	keys := make([]common.KeyType, iterations)
+	for i := 0; i < iterations; i++ {
+		// 随机挑一个存在的 Key
+		idx := rand.Intn(len(li.records))
+		keys[i] = li.records[idx].Key
+	}
+
+	// --- 选手 A: 标准二分查找 (Binary Search) ---
+	// 模拟 B-Tree 的核心操作
+	startBin := time.Now()
+	for _, key := range keys {
+		sort.Search(len(li.records), func(i int) bool {
+			return li.records[i].Key >= key
+		})
+	}
+	avgBin := float64(time.Since(startBin).Nanoseconds()) / float64(iterations)
+
+	// --- 选手 B: RMI 查找 (Learned Index) ---
+	startRMI := time.Now()
+	for _, key := range keys {
+		// 1. Model Predict
+		pos := li.model.Predict(key)
+		// 2. Error Bound Search
+		low, high := pos+li.minErr, pos+li.maxErr
+		if low < 0 {
+			low = 0
+		}
+		if high >= len(li.records) {
+			high = len(li.records) - 1
+		}
+
+		// 局部二分
+		slice := li.records[low : high+1]
+		sort.Search(len(slice), func(i int) bool {
+			return slice[i].Key >= key
+		})
+	}
+	avgRMI := float64(time.Since(startRMI).Nanoseconds()) / float64(iterations)
+
+	return avgBin, avgRMI, nil
 }

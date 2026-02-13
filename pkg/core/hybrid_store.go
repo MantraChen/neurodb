@@ -6,6 +6,7 @@ import (
 	"neurodb/pkg/common"
 	"neurodb/pkg/core/learned"
 	"neurodb/pkg/core/memory"
+	"neurodb/pkg/core/structure"
 	"neurodb/pkg/monitor"
 	"neurodb/pkg/storage"
 	"sync"
@@ -17,11 +18,11 @@ type HybridStore struct {
 	immutableMem   *memory.MemTable
 	learnedIndexes []*learned.LearnedIndex
 
+	bloom *structure.BloomFilter
+
 	backend storage.Backend
-
-	mutex sync.RWMutex
-
-	stats *monitor.WorkloadStats
+	mutex   sync.RWMutex
+	stats   *monitor.WorkloadStats
 }
 
 func NewHybridStore(dbPath string) *HybridStore {
@@ -30,6 +31,8 @@ func NewHybridStore(dbPath string) *HybridStore {
 		learnedIndexes: make([]*learned.LearnedIndex, 0),
 		backend:        storage.NewSQLiteBackend(dbPath),
 		stats:          monitor.NewWorkloadStats(),
+
+		bloom: structure.NewBloomFilter(100000, 0.01),
 	}
 
 	store.recoverFromDisk()
@@ -49,15 +52,19 @@ func (hs *HybridStore) recoverFromDisk() {
 	if len(records) > 0 {
 		li := learned.Build(records)
 		hs.learnedIndexes = append(hs.learnedIndexes, li)
+
+		for _, r := range records {
+			hs.bloom.Add(r.Key)
+		}
 	}
 
-	log.Printf("[NeuroDB]Recovery done in %v. Loaded %d records.", time.Since(start), len(records))
+	log.Printf("[NeuroDB] Recovery done in %v. Loaded %d records.", time.Since(start), len(records))
 }
 
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
-	hs.mutex.Lock()
-	defer hs.mutex.Unlock()
 	hs.stats.RecordWrite()
+
+	hs.bloom.Add(key)
 
 	if err := hs.backend.Write(key, val); err != nil {
 		log.Printf("[Error] DB Write Error: %v", err)
@@ -71,39 +78,27 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 }
 
 func (hs *HybridStore) adaptiveFlush() {
-	ratio := hs.stats.GetReadWriteRatio()
+	hs.mutex.Lock()
+	defer hs.mutex.Unlock()
 
-	log.Printf("[NeuroDB] Adapting Flush Strategy... (R/W Ratio: %.2f)", ratio)
-
-	shouldTrainModel := ratio > 0.01
-
-	if shouldTrainModel {
-		log.Println("[Optimizer] Workload is Read-Intensive. Training Model...")
-
-		start := time.Now()
-		var data []common.Record
-		hs.mutableMem.Iterator(func(key common.KeyType, val common.ValueType) bool {
-			data = append(data, common.Record{Key: key, Value: val})
-			return true
-		})
-
-		li := learned.Build(data)
-		hs.learnedIndexes = append(hs.learnedIndexes, li)
-
-		log.Printf("[NeuroDB] Model Trained in %v. Records: %d", time.Since(start), li.Size())
-	} else {
-		log.Println("[Optimizer] Workload is Write-Intensive. Skipping Model Training.")
+	if hs.mutableMem.Count() < 50000 {
+		return
 	}
-
-	hs.mutableMem = memory.NewMemTable(32)
 }
 
 func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 	hs.mutex.RLock()
-	defer hs.mutex.RUnlock()
 	hs.stats.RecordRead()
 
+	if !hs.bloom.Contains(key) {
+		hs.mutex.RUnlock()
+		return nil, false
+	}
+
+	defer hs.mutex.RUnlock()
+
 	if val, ok := hs.mutableMem.Get(key); ok {
+		hs.stats.RecordHit()
 		return val, true
 	}
 
@@ -111,13 +106,6 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 		if val, ok := hs.learnedIndexes[i].Get(key); ok {
 			return val, true
 		}
-	}
-
-	hs.stats.RecordHit()
-
-	if val, ok := hs.mutableMem.Get(key); ok {
-		hs.stats.RecordHit()
-		return val, true
 	}
 
 	return nil, false
@@ -139,17 +127,12 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 	defer hs.mutex.RUnlock()
 
 	ratio := hs.stats.GetReadWriteRatio()
-	memSize := hs.mutableMem.Size()
-	learnedCount := len(hs.learnedIndexes)
 
-	return map[string]interface{}{
-		"memtable_size_bytes":   memSize,
+	baseStats := map[string]interface{}{
 		"memtable_record_count": hs.mutableMem.Count(),
-		"learned_indexes_count": learnedCount,
+		"learned_indexes_count": len(hs.learnedIndexes),
 		"model_type":            "2-Layer RMI (Linear)",
 		"rw_ratio":              ratio,
-		"total_reads":           hs.stats.ReadCount,
-		"total_writes":          hs.stats.WriteCount,
 		"mode": func() string {
 			if ratio > 0.01 {
 				return "Read-Intensive (AI Mode)"
@@ -157,7 +140,11 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 				return "Write-Intensive (Fast Mode)"
 			}
 		}(),
+
+		"bloom_bits": hs.bloom.Stats()["bloom_bits_size"],
 	}
+
+	return baseStats
 }
 
 type ModelDataPoint struct {
@@ -184,16 +171,26 @@ func (hs *HybridStore) Reset() error {
 	defer hs.mutex.Unlock()
 
 	log.Println("[NeuroDB] Resetting database state...")
-
 	if err := hs.backend.Truncate(); err != nil {
 		return err
 	}
-
 	hs.mutableMem = memory.NewMemTable(32)
 	hs.learnedIndexes = make([]*learned.LearnedIndex, 0)
-
 	hs.stats = monitor.NewWorkloadStats()
 
-	log.Println("[NeuroDB] Database reset complete.")
+	hs.bloom = structure.NewBloomFilter(100000, 0.01)
+
 	return nil
+}
+
+func (hs *HybridStore) BenchmarkAlgo(iterations int) (float64, float64, error) {
+	hs.mutex.RLock()
+	defer hs.mutex.RUnlock()
+
+	if len(hs.learnedIndexes) == 0 {
+		return 0, 0, fmt.Errorf("no learned indexes available")
+	}
+	targetIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
+
+	return targetIndex.BenchmarkInternal(iterations)
 }

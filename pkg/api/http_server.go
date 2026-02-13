@@ -155,41 +155,23 @@ func (s *Server) handleBenchmark(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	stats := s.store.Stats()
-	if stats["learned_indexes_count"].(int) == 0 {
-		json.NewEncoder(w).Encode(map[string]string{"error": "请先点击 'Auto Ingest' 生成 AI 索引后再跑分！"})
+	bTime, aiTime, err := s.store.BenchmarkAlgo(50000)
+
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
 	}
 
-	const iterations = 10000
-	log.Println("[Benchmark] Starting Head-to-Head Comparison...")
-
-	startB := time.Now()
-	for i := 0; i < iterations; i++ {
-		s.store.Get(common.KeyType(100))
-	}
-	durationB := time.Since(startB)
-
-	startL := time.Now()
-	for i := 0; i < iterations; i++ {
-		targetKey := 200000 + (i % 50000)
-		s.store.Get(common.KeyType(targetKey))
-	}
-	durationL := time.Since(startL)
-
-	avgB := float64(durationB.Nanoseconds()) / float64(iterations)
-	avgL := float64(durationL.Nanoseconds()) / float64(iterations)
-
 	result := map[string]interface{}{
-		"iterations":   iterations,
-		"btree_avg_ns": fmt.Sprintf("%.2f ns", avgB),
-		"ai_avg_ns":    fmt.Sprintf("%.2f ns", avgL),
-		"speedup":      fmt.Sprintf("%.2fx", avgB/avgL),
+		"iterations":   50000,
+		"btree_avg_ns": fmt.Sprintf("%.2f ns", bTime),
+		"ai_avg_ns":    fmt.Sprintf("%.2f ns", aiTime),
+		"speedup":      fmt.Sprintf("%.2fx", bTime/aiTime),
 		"winner": func() string {
-			if avgL < avgB {
+			if aiTime < bTime {
 				return "NeuroDB (AI)"
 			} else {
-				return "B-Tree"
+				return "Binary Search"
 			}
 		}(),
 	}
