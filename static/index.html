@@ -11,8 +11,8 @@
             --border-color: #30363d;
             --text-main: #c9d1d9;
             --text-dim: #8b949e;
-            --accent-green: #00ff41; /* Matrix Green */
-            --accent-blue: #00f3ff;  /* Cyber Cyan */
+            --accent-green: #00ff41; 
+            --accent-blue: #00f3ff;  
             --accent-purple: #bc00ff;
             --accent-yellow: #ffbf00;
         }
@@ -20,7 +20,7 @@
         body {
             background-color: var(--bg-color);
             color: var(--text-main);
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace; /* 纯等宽字体 */
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace; 
             margin: 0;
             padding: 20px;
             background-image: radial-gradient(circle at 50% 0, #161b22 0%, #050505 70%);
@@ -31,7 +31,6 @@
             margin: 0 auto;
         }
 
-        /* 标题栏 */
         header {
             display: flex;
             justify-content: space-between;
@@ -59,7 +58,6 @@
             margin-left: 10px;
         }
 
-        /* 网格布局 */
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -83,7 +81,6 @@
             border-color: #58a6ff;
         }
 
-        /* 霓虹边框装饰 */
         .card::before {
             content: '';
             position: absolute;
@@ -98,9 +95,8 @@
         .card .value { font-size: 28px; font-weight: bold; color: #fff; margin-bottom: 5px; }
         .card .sub { font-size: 12px; color: var(--text-dim); }
 
-        /* 跑分面板特别样式 */
         .benchmark-panel {
-            grid-column: span 2; /* 占据两列 */
+            grid-column: span 2; 
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -125,7 +121,6 @@
         }
         .speedup-val { font-size: 32px; color: var(--accent-green); font-weight: bold; text-shadow: 0 0 15px rgba(0,255,65,0.4); }
 
-        /* 控制台与日志 */
         .layout-split {
             display: grid;
             grid-template-columns: 350px 1fr;
@@ -137,7 +132,6 @@
             display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;
         }
         
-        /* 输入框组 */
         .input-group {
             display: flex;
             margin-bottom: 15px;
@@ -177,13 +171,12 @@
         .btn-blue { background: #1f6feb; border-color: #1f6feb; }
         .btn-blue:hover:not(:disabled) { background: #388bfd; }
 
-        .btn-yellow { background: #9e6a03; border-color: #9e6a03; } /* 暗黄色防止刺眼 */
+        .btn-yellow { background: #9e6a03; border-color: #9e6a03; } 
         .btn-yellow:hover:not(:disabled) { background: #d29922; }
 
         .btn-purple { background: #8957e5; border-color: #8957e5; }
         .btn-purple:hover:not(:disabled) { background: #a371f7; }
 
-        /* 日志窗口 */
         #log {
             height: 300px;
             background: #000;
@@ -272,9 +265,14 @@
                 </div>
 
                 <div class="card" style="margin-top: 20px; padding: 15px; border-color: var(--accent-purple);">
-                    <h3 style="color: var(--accent-purple);">Tools</h3>
-                    <button class="btn-purple" onclick="downloadCSV()" style="width: 100%; border-radius: 6px;">
-                         Download Experiment CSV
+                    <h3 style="color: var(--accent-purple);">System Tools</h3>
+                    
+                    <button class="btn-purple" onclick="downloadCSV()" style="width: 100%; border-radius: 6px; display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 10px;">
+                        Download Experiment CSV
+                    </button>
+
+                    <button class="btn-yellow" onclick="resetDB()" style="width: 100%; border-radius: 6px; background-color: #da3633; border-color: #da3633; color: white; display: flex; align-items: center; justify-content: center; gap: 8px;">
+                        RESET DATABASE
                     </button>
                 </div>
             </div>
@@ -401,7 +399,6 @@
     
     log("Starting Auto Ingest... Please wait ~5 seconds for Flush.", 'sys');
     
-    // 禁用按钮防止重复点击
     const btn = document.querySelector('button[onclick="triggerIngest()"]');
     btn.disabled = true;
     btn.innerText = "INGESTING...";
@@ -409,7 +406,6 @@
     try {
         await fetch('/api/ingest', { method: 'POST' });
         
-        // 5秒后恢复按钮
         setTimeout(() => {
             btn.disabled = false;
             btn.innerText = " Auto Ingest 50k";
@@ -459,6 +455,20 @@
                 btn.innerText = "Run Test";
                 btn.disabled = false;
             }
+        }
+        async function resetDB() {
+            if (!confirm(" DANGER ZONE \n\nThis will delete ALL data in NeuroDB.\nAre you sure?")) return;
+            
+            log("Resetting Database...", 'sys');
+            try {
+                const res = await fetch('/api/reset');
+                if (res.ok) {
+                    log("SYSTEM RESET SUCCESSFUL.", 'sys');
+                    updateStats();
+                } else {
+                    log("Reset Failed.", 'error');
+                }
+            } catch (e) { log(e, 'error'); }
         }
 
         setInterval(updateStats, 1000);

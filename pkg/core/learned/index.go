@@ -6,7 +6,6 @@ import (
 	"sort"
 )
 
-// DiagnosticPoint 诊断数据点 (用于导出 CSV)
 type DiagnosticPoint struct {
 	Key          int64
 	RealPos      int
@@ -16,19 +15,17 @@ type DiagnosticPoint struct {
 
 type LearnedIndex struct {
 	records []common.Record
-	model   *model.RMIModel // 使用 RMI 模型
+	model   *model.RMIModel
 	minErr  int
 	maxErr  int
 }
 
-// Build 从切片构建学习型索引
 func Build(data []common.Record) *LearnedIndex {
 	keys := make([]common.KeyType, len(data))
 	for i, r := range data {
 		keys[i] = r.Key
 	}
 
-	// 使用 RMI 模型 (Fanout=100)
 	rmi := model.NewRMIModel(100)
 	rmi.Train(keys)
 
@@ -54,16 +51,13 @@ func Build(data []common.Record) *LearnedIndex {
 	}
 }
 
-// Get 查询数据
 func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	if len(li.records) == 0 {
 		return nil, false
 	}
 
-	// 1. RMI 预测
 	predictedPos := li.model.Predict(key)
 
-	// 2. 确定范围
 	low := predictedPos + li.minErr
 	high := predictedPos + li.maxErr
 
@@ -77,7 +71,6 @@ func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 		return nil, false
 	}
 
-	// 3. 二分查找
 	slice := li.records[low : high+1]
 	idx := sort.Search(len(slice), func(i int) bool {
 		return slice[i].Key >= key
@@ -93,7 +86,6 @@ func (li *LearnedIndex) Size() int {
 	return len(li.records)
 }
 
-// ExportDiagnostics 导出所有数据的预测情况
 func (li *LearnedIndex) ExportDiagnostics() []DiagnosticPoint {
 	results := make([]DiagnosticPoint, len(li.records))
 
