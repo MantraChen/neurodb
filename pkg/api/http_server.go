@@ -28,6 +28,7 @@ func (s *Server) Start(port string) {
 	http.HandleFunc("/api/ingest", s.handleIngest)
 	http.HandleFunc("/api/benchmark", s.handleBenchmark)
 	http.HandleFunc("/api/reset", s.handleReset)
+	http.HandleFunc("/api/mocap/put", s.handleMoCapPut)
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
@@ -131,7 +132,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		rand.Seed(time.Now().UnixNano())
 
 		currentKey := 200000
-		count := 55000
+		count := 50000
 
 		for i := 0; i < count; i++ {
 			step := rand.Intn(10) + 1
@@ -189,4 +190,37 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Database Reset Successful"))
+}
+
+func (s *Server) handleMoCapPut(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		X          uint32 `json:"x"`
+		Y          uint32 `json:"y"`
+		Z          uint32 `json:"z"`
+		MotionData string `json:"data"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid body", http.StatusBadRequest)
+		return
+	}
+	zKey, err := common.Encode3D(req.X, req.Y, req.Z)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.store.Put(common.KeyType(zKey), []byte(req.MotionData))
+
+	response := map[string]interface{}{
+		"status":      "ok",
+		"spatial_key": zKey,
+		"message":     fmt.Sprintf("Stored at (%d, %d, %d)", req.X, req.Y, req.Z),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
