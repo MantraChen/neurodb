@@ -227,7 +227,7 @@ func (hs *HybridStore) BenchmarkAlgo(iterations int) (float64, float64, error) {
 
 func (hs *HybridStore) compact() {
 	start := time.Now()
-	log.Println("[Compaction] ⚠️ Triggered! Merging all index segments...")
+	log.Println("[Compaction] Triggered! Merging all index segments...")
 
 	var totalRecords []common.Record
 	for _, idx := range hs.learnedIndexes {
@@ -237,6 +237,25 @@ func (hs *HybridStore) compact() {
 	bigIndex := learned.Build(totalRecords)
 	hs.learnedIndexes = []*learned.LearnedIndex{bigIndex}
 
-	log.Printf("[Compaction] ✅ Done in %v. Merged %d records into 1 Giant Model.",
+	log.Printf("[Compaction] Done in %v. Merged %d records into 1 Giant Model.",
 		time.Since(start), len(totalRecords))
+}
+
+func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
+	hs.mutex.RLock() // 读锁即可
+	defer hs.mutex.RUnlock()
+
+	var results []common.Record
+
+	memItems := hs.mutableMem.Scan(start, end)
+	for _, item := range memItems {
+		results = append(results, common.Record{Key: item.Key, Value: item.Val})
+	}
+
+	for _, li := range hs.learnedIndexes {
+		res := li.Scan(start, end)
+		results = append(results, res...)
+	}
+
+	return results
 }
