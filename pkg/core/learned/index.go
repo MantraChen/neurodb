@@ -23,12 +23,16 @@ type LearnedIndex struct {
 }
 
 func Build(data []common.Record) *LearnedIndex {
+	sort.Slice(data, func(i, j int) bool {
+		return data[i].Key < data[j].Key
+	})
+
 	keys := make([]common.KeyType, len(data))
 	for i, r := range data {
 		keys[i] = r.Key
 	}
 
-	rmi := model.NewRMIModel(100)
+	rmi := model.NewRMIModel(1000)
 	rmi.Train(keys)
 
 	minErr, maxErr := 0, 0
@@ -53,6 +57,10 @@ func Build(data []common.Record) *LearnedIndex {
 	}
 }
 
+func (li *LearnedIndex) GetAllRecords() []common.Record {
+	return li.records
+}
+
 func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	if len(li.records) == 0 {
 		return nil, false
@@ -70,6 +78,19 @@ func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 		high = len(li.records) - 1
 	}
 	if low > high {
+		return nil, false
+	}
+
+	if high-low < 16 {
+		// Linear Scan (SIMD friendly)
+		for i := low; i <= high; i++ {
+			if li.records[i].Key == key {
+				return li.records[i].Value, true
+			}
+			if li.records[i].Key > key {
+				return nil, false
+			}
+		}
 		return nil, false
 	}
 
@@ -110,16 +131,12 @@ func (li *LearnedIndex) BenchmarkInternal(iterations int) (float64, float64, err
 		return 0, 0, nil
 	}
 
-	// 准备随机 Key 列表，确保公平
 	keys := make([]common.KeyType, iterations)
 	for i := 0; i < iterations; i++ {
-		// 随机挑一个存在的 Key
 		idx := rand.Intn(len(li.records))
 		keys[i] = li.records[idx].Key
 	}
 
-	// --- 选手 A: 标准二分查找 (Binary Search) ---
-	// 模拟 B-Tree 的核心操作
 	startBin := time.Now()
 	for _, key := range keys {
 		sort.Search(len(li.records), func(i int) bool {
@@ -128,25 +145,32 @@ func (li *LearnedIndex) BenchmarkInternal(iterations int) (float64, float64, err
 	}
 	avgBin := float64(time.Since(startBin).Nanoseconds()) / float64(iterations)
 
-	// --- 选手 B: RMI 查找 (Learned Index) ---
 	startRMI := time.Now()
 	for _, key := range keys {
-		// 1. Model Predict
-		pos := li.model.Predict(key)
-		// 2. Error Bound Search
-		low, high := pos+li.minErr, pos+li.maxErr
-		if low < 0 {
-			low = 0
+		pred := li.model.Predict(key)
+		l, h := pred+li.minErr, pred+li.maxErr
+		if l < 0 {
+			l = 0
 		}
-		if high >= len(li.records) {
-			high = len(li.records) - 1
+		if h >= len(li.records) {
+			h = len(li.records) - 1
 		}
 
-		// 局部二分
-		slice := li.records[low : high+1]
-		sort.Search(len(slice), func(i int) bool {
-			return slice[i].Key >= key
-		})
+		if h-l < 16 {
+			found := false
+			for i := l; i <= h; i++ {
+				if li.records[i].Key == key {
+					found = true
+					break
+				}
+			}
+			_ = found
+		} else {
+			slice := li.records[l : h+1]
+			sort.Search(len(slice), func(i int) bool {
+				return slice[i].Key >= key
+			})
+		}
 	}
 	avgRMI := float64(time.Since(startRMI).Nanoseconds()) / float64(iterations)
 

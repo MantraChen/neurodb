@@ -72,7 +72,7 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 
 	hs.mutableMem.Put(key, val)
 
-	if hs.mutableMem.Count() >= 50000 {
+	if hs.mutableMem.Count() >= 10000 {
 		hs.adaptiveFlush()
 	}
 }
@@ -81,9 +81,39 @@ func (hs *HybridStore) adaptiveFlush() {
 	hs.mutex.Lock()
 	defer hs.mutex.Unlock()
 
-	if hs.mutableMem.Count() < 50000 {
+	if hs.mutableMem.Count() < 10000 {
 		return
 	}
+
+	ratio := hs.stats.GetReadWriteRatio()
+	log.Printf("[NeuroDB] Adapting Flush Strategy... (R/W Ratio: %.2f)", ratio)
+
+	shouldTrainModel := ratio > 0.0001
+
+	if shouldTrainModel {
+		log.Println("[Optimizer] Workload is Read-Intensive. Training Model...")
+
+		start := time.Now()
+
+		var data []common.Record
+		hs.mutableMem.Iterator(func(key common.KeyType, val common.ValueType) bool {
+			data = append(data, common.Record{Key: key, Value: val})
+			return true
+		})
+
+		li := learned.Build(data)
+		hs.learnedIndexes = append(hs.learnedIndexes, li)
+
+		if len(hs.learnedIndexes) >= 4 {
+			hs.compact()
+		}
+
+		log.Printf("[NeuroDB] Model Trained in %v. Records: %d", time.Since(start), li.Size())
+	} else {
+		log.Println("[Optimizer] Write-Intensive. Flushing without training.")
+	}
+
+	hs.mutableMem = memory.NewMemTable(32)
 }
 
 func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
@@ -193,4 +223,20 @@ func (hs *HybridStore) BenchmarkAlgo(iterations int) (float64, float64, error) {
 	targetIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
 
 	return targetIndex.BenchmarkInternal(iterations)
+}
+
+func (hs *HybridStore) compact() {
+	start := time.Now()
+	log.Println("[Compaction] ⚠️ Triggered! Merging all index segments...")
+
+	var totalRecords []common.Record
+	for _, idx := range hs.learnedIndexes {
+		totalRecords = append(totalRecords, idx.GetAllRecords()...)
+	}
+
+	bigIndex := learned.Build(totalRecords)
+	hs.learnedIndexes = []*learned.LearnedIndex{bigIndex}
+
+	log.Printf("[Compaction] ✅ Done in %v. Merged %d records into 1 Giant Model.",
+		time.Since(start), len(totalRecords))
 }
