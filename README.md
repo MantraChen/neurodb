@@ -43,6 +43,7 @@ Open browser and visit: http://localhost:8080
 2.  **Observe Adaptation**: Watch the `System Mode` status change from `Write-Intensive` to `Read-Intensive (AI Mode)`.
 3.  **Performance Benchmark**: Click `RUN PERFORMANCE TEST` to compare latency between B-Tree and NeuroDB.
 4.  **Export Data**: Click `Download Experiment CSV` to get raw data for thesis plotting.
+5.  **Reset**: Click `RESET DATABASE` to clear all data and start a new experiment.
 
 ## Project Structure
 

@@ -8,15 +8,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Backend 定义底层数据库的行为
 type Backend interface {
 	Write(key common.KeyType, val common.ValueType) error
 	Read(key common.KeyType) (common.ValueType, bool)
 	LoadAll() ([]common.Record, error)
 	Close()
+	Truncate() error
 }
 
-// SQLiteBackend 实现
 type SQLiteBackend struct {
 	db *sql.DB
 }
@@ -27,7 +26,6 @@ func NewSQLiteBackend(path string) *SQLiteBackend {
 		log.Fatalf("Failed to open SQLite: %v", err)
 	}
 
-	// 初始化表结构
 	query := `
 	CREATE TABLE IF NOT EXISTS data (
 		key INTEGER PRIMARY KEY,
@@ -66,7 +64,6 @@ func (s *SQLiteBackend) Read(key common.KeyType) (common.ValueType, bool) {
 	return val, true
 }
 
-// LoadAll 用于重启时恢复数据
 func (s *SQLiteBackend) LoadAll() ([]common.Record, error) {
 	rows, err := s.db.Query("SELECT key, value FROM data ORDER BY key ASC")
 	if err != nil {
@@ -84,6 +81,14 @@ func (s *SQLiteBackend) LoadAll() ([]common.Record, error) {
 		records = append(records, common.Record{Key: common.KeyType(k), Value: v})
 	}
 	return records, nil
+}
+
+func (s *SQLiteBackend) Truncate() error {
+	_, err := s.db.Exec("DELETE FROM data")
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *SQLiteBackend) Close() {
