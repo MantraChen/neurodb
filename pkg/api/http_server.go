@@ -29,6 +29,7 @@ func (s *Server) Start(port string) {
 	http.HandleFunc("/api/benchmark", s.handleBenchmark)
 	http.HandleFunc("/api/reset", s.handleReset)
 	http.HandleFunc("/api/mocap/put", s.handleMoCapPut)
+	http.HandleFunc("/api/scan", s.handleScan)
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
@@ -223,4 +224,25 @@ func (s *Server) handleMoCapPut(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	startStr := r.URL.Query().Get("start")
+	endStr := r.URL.Query().Get("end")
+
+	start, _ := strconv.Atoi(startStr)
+	end, _ := strconv.Atoi(endStr)
+
+	records := s.store.Scan(common.KeyType(start), common.KeyType(end))
+
+	resp := map[string]interface{}{
+		"count": len(records),
+		"data":  records,
+		"range": fmt.Sprintf("[%d, %d]", start, end),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

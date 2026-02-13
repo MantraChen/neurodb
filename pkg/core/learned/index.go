@@ -176,3 +176,37 @@ func (li *LearnedIndex) BenchmarkInternal(iterations int) (float64, float64, err
 
 	return avgBin, avgRMI, nil
 }
+
+func (li *LearnedIndex) Scan(lowKey, highKey common.KeyType) []common.Record {
+	var res []common.Record
+	if len(li.records) == 0 {
+		return res
+	}
+
+	pos := li.model.Predict(lowKey)
+
+	startIdx := pos + li.minErr
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx >= len(li.records) {
+		startIdx = len(li.records) - 1
+	}
+
+	for startIdx > 0 && li.records[startIdx].Key >= lowKey {
+		startIdx--
+	}
+	for startIdx < len(li.records) && li.records[startIdx].Key < lowKey {
+		startIdx++
+	}
+
+	for i := startIdx; i < len(li.records); i++ {
+		rec := li.records[i]
+		if rec.Key > highKey {
+			break
+		}
+		res = append(res, rec)
+	}
+
+	return res
+}

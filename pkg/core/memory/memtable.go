@@ -82,7 +82,6 @@ func (smt *MemTable) Size() int {
 	return total
 }
 
-// Count 汇总所有分片记录数
 func (smt *MemTable) Count() int {
 	total := 0
 	for _, s := range smt.shards {
@@ -93,7 +92,6 @@ func (smt *MemTable) Count() int {
 	return total
 }
 
-// Iterator 遍历所有分片 (注意：这里是串行遍历，用于 Flush)
 func (smt *MemTable) Iterator(fn func(key common.KeyType, val common.ValueType) bool) {
 	for _, s := range smt.shards {
 		s.lock.RLock()
@@ -103,4 +101,24 @@ func (smt *MemTable) Iterator(fn func(key common.KeyType, val common.ValueType) 
 		})
 		s.lock.RUnlock()
 	}
+}
+
+func (smt *MemTable) Scan(low, high common.KeyType) []Item {
+	var res []Item
+
+	for _, s := range smt.shards {
+		s.lock.RLock()
+
+		s.tree.AscendGreaterOrEqual(Item{Key: low}, func(i btree.Item) bool {
+			item := i.(Item)
+			if item.Key > high {
+				return false
+			}
+			res = append(res, item)
+			return true
+		})
+
+		s.lock.RUnlock()
+	}
+	return res
 }
