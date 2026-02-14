@@ -9,6 +9,7 @@ import (
 	"neurodb/pkg/core/structure"
 	"neurodb/pkg/monitor"
 	"neurodb/pkg/storage"
+	"os"
 	"sync"
 	"time"
 )
@@ -81,9 +82,23 @@ func (hs *HybridStore) backgroundPersist() {
 }
 
 func (hs *HybridStore) recoverFromDisk() {
-	log.Println("[NeuroDB] Recovering data from Disk (SQLite)...")
 	start := time.Now()
 
+	if _, err := os.Stat(SnapshotFile); err == nil {
+		log.Println("[NeuroDB] Found Snapshot. Fast recovering...")
+		li, err := learned.Load(SnapshotFile)
+		if err == nil {
+			hs.learnedIndexes = append(hs.learnedIndexes, li)
+			for _, r := range li.GetAllRecords() {
+				hs.bloom.Add(r.Key)
+			}
+			log.Printf("[NeuroDB] Fast Recovery done in %v. Loaded %d records from Snapshot.", time.Since(start), li.Size())
+			return
+		}
+		log.Printf("[Warning] Snapshot load failed: %v. Falling back to SQLite.", err)
+	}
+
+	log.Println("[NeuroDB] Recovering data from Disk (SQLite)...")
 	records, err := hs.backend.LoadAll()
 	if err != nil {
 		log.Printf("[Error] Recovery failed: %v", err)
@@ -93,7 +108,6 @@ func (hs *HybridStore) recoverFromDisk() {
 	if len(records) > 0 {
 		li := learned.Build(records)
 		hs.learnedIndexes = append(hs.learnedIndexes, li)
-
 		for _, r := range records {
 			hs.bloom.Add(r.Key)
 		}
@@ -236,9 +250,24 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 	return nil, false
 }
 
+const SnapshotFile = "neuro.index"
+
 func (hs *HybridStore) Close() {
+	log.Println("[NeuroDB] Closing... Saving Model Snapshot.")
+
 	close(hs.closeCh)
 	hs.wg.Wait()
+
+	hs.mutex.RLock()
+	if len(hs.learnedIndexes) > 0 {
+		latestIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
+		if err := latestIndex.Save(SnapshotFile); err != nil {
+			log.Printf("[Error] Failed to save snapshot: %v", err)
+		} else {
+			log.Printf("[Snapshot] Model saved to %s", SnapshotFile)
+		}
+	}
+	hs.mutex.RUnlock()
 
 	hs.backend.Close()
 }

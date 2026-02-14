@@ -1,17 +1,15 @@
 package model
 
-import (
-	"neurodb/pkg/common"
-)
+import "neurodb/pkg/common"
 
 type LinearModel struct {
 	Slope     float64
 	Intercept float64
-	n         float64
-	sumX      float64
-	sumY      float64
-	sumXY     float64
-	sumXX     float64
+	N         float64
+	SumX      float64
+	SumY      float64
+	SumXY     float64
+	SumXX     float64
 }
 
 func NewLinearModel() *LinearModel {
@@ -19,33 +17,31 @@ func NewLinearModel() *LinearModel {
 }
 
 func (lm *LinearModel) Train(keys []common.KeyType) {
-	lm.n = float64(len(keys))
-	lm.sumX, lm.sumY, lm.sumXY, lm.sumXX = 0, 0, 0, 0
+	lm.N = float64(len(keys))
+	lm.SumX, lm.SumY, lm.SumXY, lm.SumXX = 0, 0, 0, 0
 
 	for i, key := range keys {
 		x := float64(key)
 		y := float64(i)
-
-		lm.sumX += x
-		lm.sumY += y
-		lm.sumXY += x * y
-		lm.sumXX += x * x
+		lm.SumX += x
+		lm.SumY += y
+		lm.SumXY += x * y
+		lm.SumXX += x * x
 	}
 	lm.solve()
 }
 
 func (lm *LinearModel) TrainWithPos(keys []common.KeyType, positions []int) {
-	lm.n = float64(len(keys))
-	lm.sumX, lm.sumY, lm.sumXY, lm.sumXX = 0, 0, 0, 0
+	lm.N = float64(len(keys))
+	lm.SumX, lm.SumY, lm.SumXY, lm.SumXX = 0, 0, 0, 0
 
 	for i, key := range keys {
 		x := float64(key)
 		y := float64(positions[i])
-
-		lm.sumX += x
-		lm.sumY += y
-		lm.sumXY += x * y
-		lm.sumXX += x * x
+		lm.SumX += x
+		lm.SumY += y
+		lm.SumXY += x * y
+		lm.SumXX += x * x
 	}
 	lm.solve()
 }
@@ -54,23 +50,22 @@ func (lm *LinearModel) Update(key common.KeyType, pos int) {
 	x := float64(key)
 	y := float64(pos)
 
-	lm.n += 1
-	lm.sumX += x
-	lm.sumY += y
-	lm.sumXY += x * y
-	lm.sumXX += x * x
-
+	lm.N += 1
+	lm.SumX += x
+	lm.SumY += y
+	lm.SumXY += x * y
+	lm.SumXX += x * x
 	lm.solve()
 }
 
 func (lm *LinearModel) solve() {
-	denominator := lm.n*lm.sumXX - lm.sumX*lm.sumX
+	denominator := lm.N*lm.SumXX - lm.SumX*lm.SumX
 	if denominator == 0 {
 		lm.Slope = 0
 		lm.Intercept = 0
 	} else {
-		lm.Slope = (lm.n*lm.sumXY - lm.sumX*lm.sumY) / denominator
-		lm.Intercept = (lm.sumY - lm.Slope*lm.sumX) / lm.n
+		lm.Slope = (lm.N*lm.SumXY - lm.SumX*lm.SumY) / denominator
+		lm.Intercept = (lm.SumY - lm.Slope*lm.SumX) / lm.N
 	}
 }
 

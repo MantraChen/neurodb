@@ -1,20 +1,18 @@
 package model
 
-import (
-	"neurodb/pkg/common"
-)
+import "neurodb/pkg/common"
 
 type RMIModel struct {
-	globalMin common.KeyType
-	globalMax common.KeyType
-	fanout    int
-	buckets   []*LinearModel
+	GlobalMin common.KeyType
+	GlobalMax common.KeyType
+	Fanout    int
+	Buckets   []*LinearModel
 }
 
 func NewRMIModel(fanout int) *RMIModel {
 	return &RMIModel{
-		fanout:  fanout,
-		buckets: make([]*LinearModel, fanout),
+		Fanout:  fanout,
+		Buckets: make([]*LinearModel, fanout),
 	}
 }
 
@@ -23,26 +21,26 @@ func (rmi *RMIModel) Train(keys []common.KeyType) {
 		return
 	}
 
-	rmi.globalMin = keys[0]
-	rmi.globalMax = keys[len(keys)-1]
+	rmi.GlobalMin = keys[0]
+	rmi.GlobalMax = keys[len(keys)-1]
 
-	keyRange := float64(rmi.globalMax - rmi.globalMin)
+	keyRange := float64(rmi.GlobalMax - rmi.GlobalMin)
 	if keyRange == 0 {
 		keyRange = 1
 	}
 
-	segments := make([][]common.KeyType, rmi.fanout)
-	for i := 0; i < rmi.fanout; i++ {
+	segments := make([][]common.KeyType, rmi.Fanout)
+	for i := 0; i < rmi.Fanout; i++ {
 		segments[i] = make([]common.KeyType, 0)
 	}
 
-	bucketKeys := make([][]common.KeyType, rmi.fanout)
-	bucketPoss := make([][]int, rmi.fanout)
+	bucketKeys := make([][]common.KeyType, rmi.Fanout)
+	bucketPoss := make([][]int, rmi.Fanout)
 
 	for i, key := range keys {
-		bucketIdx := int(float64(key-rmi.globalMin) / keyRange * float64(rmi.fanout))
-		if bucketIdx >= rmi.fanout {
-			bucketIdx = rmi.fanout - 1
+		bucketIdx := int(float64(key-rmi.GlobalMin) / keyRange * float64(rmi.Fanout))
+		if bucketIdx >= rmi.Fanout {
+			bucketIdx = rmi.Fanout - 1
 		}
 		if bucketIdx < 0 {
 			bucketIdx = 0
@@ -52,42 +50,42 @@ func (rmi *RMIModel) Train(keys []common.KeyType) {
 		bucketPoss[bucketIdx] = append(bucketPoss[bucketIdx], i)
 	}
 
-	for i := 0; i < rmi.fanout; i++ {
-		rmi.buckets[i] = NewLinearModel()
-		rmi.buckets[i].TrainWithPos(bucketKeys[i], bucketPoss[i])
+	for i := 0; i < rmi.Fanout; i++ {
+		rmi.Buckets[i] = NewLinearModel()
+		rmi.Buckets[i].TrainWithPos(bucketKeys[i], bucketPoss[i])
 	}
 }
 
 func (rmi *RMIModel) Predict(key common.KeyType) int {
-	keyRange := float64(rmi.globalMax - rmi.globalMin)
+	keyRange := float64(rmi.GlobalMax - rmi.GlobalMin)
 	if keyRange == 0 {
 		return 0
 	}
 
-	bucketIdx := int(float64(key-rmi.globalMin) / keyRange * float64(rmi.fanout))
-	if bucketIdx >= rmi.fanout {
-		bucketIdx = rmi.fanout - 1
+	bucketIdx := int(float64(key-rmi.GlobalMin) / keyRange * float64(rmi.Fanout))
+	if bucketIdx >= rmi.Fanout {
+		bucketIdx = rmi.Fanout - 1
 	}
 	if bucketIdx < 0 {
 		bucketIdx = 0
 	}
 
-	return rmi.buckets[bucketIdx].Predict(key)
+	return rmi.Buckets[bucketIdx].Predict(key)
 }
 
 func (rmi *RMIModel) Update(key common.KeyType, pos int) {
-	keyRange := float64(rmi.globalMax - rmi.globalMin)
+	keyRange := float64(rmi.GlobalMax - rmi.GlobalMin)
 	if keyRange == 0 {
 		keyRange = 1
 	}
 
-	bucketIdx := int(float64(key-rmi.globalMin) / keyRange * float64(rmi.fanout))
-	if bucketIdx >= rmi.fanout {
-		bucketIdx = rmi.fanout - 1
+	bucketIdx := int(float64(key-rmi.GlobalMin) / keyRange * float64(rmi.Fanout))
+	if bucketIdx >= rmi.Fanout {
+		bucketIdx = rmi.Fanout - 1
 	}
 	if bucketIdx < 0 {
 		bucketIdx = 0
 	}
 
-	rmi.buckets[bucketIdx].Update(key, pos)
+	rmi.Buckets[bucketIdx].Update(key, pos)
 }
