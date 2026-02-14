@@ -23,7 +23,6 @@ func Compact1By2(x uint64) uint32 {
 	return uint32(x)
 }
 
-// Encode3D (x,y,z) -> Z-Key
 func Encode3D(x, y, z uint32) (int64, error) {
 	if x >= 1024 || y >= 1024 || z >= 1024 {
 		return 0, errors.New("coordinate out of bounds (max 1023)")
@@ -32,7 +31,6 @@ func Encode3D(x, y, z uint32) (int64, error) {
 	return int64(code), nil
 }
 
-// Decode3D Z-Key -> (x,y,z)
 func Decode3D(code int64) (uint32, uint32, uint32) {
 	c := uint64(code)
 	x := Compact1By2(c)
@@ -51,6 +49,7 @@ func GetZRanges(minX, minY, minZ, maxX, maxY, maxZ uint32) ([]ZRange, error) {
 	decompose(0, 0, 0, 1024, 1024, 1024,
 		minX, minY, minZ, maxX, maxY, maxZ,
 		0, &ranges)
+
 	return mergeRanges(ranges), nil
 }
 
@@ -92,10 +91,12 @@ func mergeRanges(ranges []ZRange) []ZRange {
 	if len(ranges) == 0 {
 		return ranges
 	}
+
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Min < ranges[j].Min })
 
 	var merged []ZRange
 	curr := ranges[0]
+
 	for i := 1; i < len(ranges); i++ {
 		if ranges[i].Min <= curr.Max+1 {
 			if ranges[i].Max > curr.Max {
