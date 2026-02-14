@@ -75,7 +75,9 @@ Open your browser and navigate to: http://localhost:8080
 * **LSM Metrics**: WAL Queue, MemTable Size, SSTable Count.
 * **AI Diagnostics**: Real-time Error Heatmap of the Learned Index model.
 * **Control Panel**: Trigger manual ingestion, compaction, or system reset.
-##Configuration (*configs/neuro.yaml*)
+## Configuration
+The server loads `configs/neuro.yaml` from the project root. If the file is missing, defaults are used. To customize, copy `configs/config.example.yaml` to `configs/neuro.yaml` and edit.
+
 ```yaml
 server:
   addr: ":8080"      # Web Dashboard & HTTP API

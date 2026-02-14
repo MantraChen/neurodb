@@ -1,13 +1,16 @@
+# NeuroDB Configuration Example
+# Copy this file to neuro.yaml (e.g. configs/neuro.yaml) and adjust as needed.
+# Server loads: configs/neuro.yaml (defaults used if file missing)
+
 server:
-  addr: ":4000"
+  addr: ":8080"       # HTTP: Web Dashboard & REST API
+  tcp_addr: ":9090"   # TCP: Binary protocol (CLI & SDK)
 
 storage:
-  driver: "sqlite"        
-  dsn: "file:neurodb.db"  
+  path: "neuro_data"  # Data directory (WAL + SSTables)
+  wal_buffer_size: 10000
 
-sql_proxy:
-  protocol: "mysql"       
-
-log:
-  level: "info"
-
+system:
+  shard_count: 16
+  bloom_size: 200000
+  bloom_false_prob: 0.01

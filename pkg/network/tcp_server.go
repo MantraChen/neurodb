@@ -43,7 +43,7 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 		req, err := protocol.Decode(conn)
 		if err != nil {
 			if err != io.EOF {
-				// log.Printf("[TCP] Decode error: %v", err)
+				log.Printf("[TCP] Decode error: %v", err)
 			}
 			return
 		}
