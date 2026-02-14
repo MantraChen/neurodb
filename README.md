@@ -89,6 +89,7 @@ system:
   shard_count: 16    # Concurrency shards
   bloom_size: 200000 # Bloom filter capacity per shard
 ```
+---
 ##API Reference (Go SDK)
 ```Go
 import "neurodb/pkg/client"
