@@ -65,7 +65,7 @@ Found 5 records:
 ```
 
 ## 3. Run Benchmarks
-###Compare TCP vs HTTP performance across Write, Read, and Scan workloads.
+Compare TCP vs HTTP performance across Write, Read, and Scan workloads.
 ```bash
 go run cmd/benchmark/main.go
 ```
