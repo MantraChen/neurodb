@@ -146,6 +146,7 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 
 	fileName := fmt.Sprintf("shard-%d-%d.sst", shard.id, time.Now().UnixNano())
 	fullPath := filepath.Join(hs.conf.Storage.Path, fileName)
+
 	builder, err := sstable.NewBuilder(fullPath)
 	if err == nil {
 		for _, r := range data {
@@ -158,19 +159,11 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 			shard.sstables = append(shard.sstables, sst)
 		}
 	} else {
-		log.Printf("[Error] Flush failed: %v", err)
+		log.Printf("[Error] Failed to create SSTable: %v", err)
 	}
 
 	if len(shard.sstables) >= 4 {
 		go hs.compactShard(shard)
-	}
-
-	ratio := hs.stats.GetReadWriteRatio()
-	if ratio > 0.0001 && len(shard.learnedIndexes) > 0 && count < 10000 {
-		shard.learnedIndexes[len(shard.learnedIndexes)-1].Append(data)
-	} else {
-		li := learned.Build(data)
-		shard.learnedIndexes = append(shard.learnedIndexes, li)
 	}
 
 	shard.mutableMem = memory.NewMemTable(32)
