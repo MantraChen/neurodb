@@ -1,10 +1,13 @@
-# SQLite 数据库文件
+# 数据库文件
 *.db
 *.db-shm
 *.db-wal
 *.db.wal
+*.wal
+*.sst
 
 # Index 训练模型文件
 *.index
+
 # 或者如果只想排除特定的数据库文件，可以使用：
 # neuro.db*

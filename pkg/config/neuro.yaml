@@ -2,8 +2,8 @@ server:
   addr: ":8080"
 
 storage:
-  path: "neuro_data"       
-  wal_buffer_size: 10000   
+  path: "neuro_data"   
+  wal_buffer_size: 10000
 
 system:
   shard_count: 16

@@ -10,20 +10,20 @@ import (
 	"neurodb/pkg/core/structure"
 	"neurodb/pkg/monitor"
 	"neurodb/pkg/storage"
+	"neurodb/pkg/storage/sstable"
+	"os"            // [新增]
+	"path/filepath" // [新增]
 	"sync"
 	"time"
 )
 
-const (
-	ShardCount   = 16
-	SnapshotFile = "neuro.index"
-)
-
+// Shard: 独立的存储单元
 type Shard struct {
 	id             int
 	mutex          sync.RWMutex
 	mutableMem     *memory.MemTable
 	learnedIndexes []*learned.LearnedIndex
+	sstables       []*sstable.SSTable
 	bloom          *structure.BloomFilter
 	compactionLock sync.Mutex
 }
@@ -33,10 +33,12 @@ func NewShard(id int, bloomSize uint, bloomP float64) *Shard {
 		id:             id,
 		mutableMem:     memory.NewMemTable(32),
 		learnedIndexes: make([]*learned.LearnedIndex, 0),
+		sstables:       make([]*sstable.SSTable, 0),
 		bloom:          structure.NewBloomFilter(bloomSize, bloomP),
 	}
 }
 
+// HybridStore: 分片协调者
 type HybridStore struct {
 	shards  []*Shard
 	backend storage.Backend
@@ -50,8 +52,16 @@ type HybridStore struct {
 }
 
 func NewHybridStore(cfg *config.Config) *HybridStore {
+	// [修复] 1. 确保数据目录存在
+	if err := os.MkdirAll(cfg.Storage.Path, 0755); err != nil {
+		log.Fatalf("Failed to create data directory: %v", err)
+	}
+
+	// [修复] 2. WAL 文件放入目录中
+	walPath := filepath.Join(cfg.Storage.Path, "neuro.db")
+
 	hs := &HybridStore{
-		backend: storage.NewDiskBackend(cfg.Storage.Path),
+		backend: storage.NewDiskBackend(walPath),
 		stats:   monitor.NewWorkloadStats(),
 		writeCh: make(chan common.Record, cfg.Storage.WalBufferSize),
 		closeCh: make(chan struct{}),
@@ -98,25 +108,38 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 
 	shard.mutex.RLock()
 
+	// 1. Bloom Filter
 	if !shard.bloom.Contains(key) {
 		shard.mutex.RUnlock()
 		return nil, false
 	}
 
+	// 2. MemTable
 	if val, ok := shard.mutableMem.Get(key); ok {
 		shard.mutex.RUnlock()
 		hs.stats.RecordHit()
 		return val, true
 	}
 
+	// 3. Learned Indexes (Memory L1)
 	for i := len(shard.learnedIndexes) - 1; i >= 0; i-- {
 		if val, ok := shard.learnedIndexes[i].Get(key); ok {
 			shard.mutex.RUnlock()
 			return val, true
 		}
 	}
+
+	// 4. SSTables (Disk L2)
+	for i := len(shard.sstables) - 1; i >= 0; i-- {
+		if val, ok := shard.sstables[i].Get(key); ok {
+			shard.mutex.RUnlock()
+			return val, true
+		}
+	}
+
 	shard.mutex.RUnlock()
 
+	// 5. Backend (Recovery Log)
 	if val, found := hs.backend.Read(key); found {
 		return val, true
 	}
@@ -136,6 +159,27 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 		return true
 	})
 
+	// [修复] 3. SSTable 文件放入目录中
+	// 格式: data/shard-0-123456789.sst
+	fileName := fmt.Sprintf("shard-%d-%d.sst", shard.id, time.Now().UnixNano())
+	fullPath := filepath.Join(hs.conf.Storage.Path, fileName)
+
+	builder, err := sstable.NewBuilder(fullPath)
+	if err == nil {
+		for _, r := range data {
+			builder.Add(r.Key, r.Value)
+		}
+		builder.Close()
+
+		sst, err := sstable.Open(fullPath)
+		if err == nil {
+			shard.sstables = append(shard.sstables, sst)
+		}
+	} else {
+		log.Printf("[Error] Failed to create SSTable: %v", err)
+	}
+
+	// [保留] 构建 Learned Index
 	ratio := hs.stats.GetReadWriteRatio()
 	shouldTrainModel := ratio > 0.0001
 	canFineTune := shouldTrainModel && len(shard.learnedIndexes) > 0 && count < 10000
@@ -276,12 +320,14 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 			res := li.Scan(start, end)
 			results = append(results, res...)
 		}
+		// SSTable scan skipped for simplicity in this demo
 		shard.mutex.RUnlock()
 	}
 	return results
 }
 
 func (hs *HybridStore) ScanBox(minX, minY, minZ, maxX, maxY, maxZ uint32) []common.Record {
+	// 移除全局锁
 	ranges, _ := common.GetZRanges(minX, minY, minZ, maxX, maxY, maxZ)
 	var results []common.Record
 
@@ -300,22 +346,49 @@ func (hs *HybridStore) Close() {
 	close(hs.closeCh)
 	hs.wg.Wait()
 	hs.backend.Close()
+	for _, shard := range hs.shards {
+		shard.mutex.Lock()
+		for _, sst := range shard.sstables {
+			sst.Close()
+		}
+		shard.mutex.Unlock()
+	}
 }
 
-func (hs *HybridStore) Stats() map[string]interface{} {
+// DebugPrint 现在遍历所有分片来汇总信息
+func (hs *HybridStore) DebugPrint() {
 	totalMem := 0
 	totalIndex := 0
+	totalSST := 0
 
 	for _, s := range hs.shards {
 		s.mutex.RLock()
 		totalMem += s.mutableMem.Count()
 		totalIndex += len(s.learnedIndexes)
+		totalSST += len(s.sstables)
+		s.mutex.RUnlock()
+	}
+	log.Printf("Store Status: MemTable: %d, Learned Layers: %d, SSTables: %d (Across %d Shards)",
+		totalMem, totalIndex, totalSST, len(hs.shards))
+}
+
+func (hs *HybridStore) Stats() map[string]interface{} {
+	totalMem := 0
+	totalIndex := 0
+	totalSST := 0
+
+	for _, s := range hs.shards {
+		s.mutex.RLock()
+		totalMem += s.mutableMem.Count()
+		totalIndex += len(s.learnedIndexes)
+		totalSST += len(s.sstables)
 		s.mutex.RUnlock()
 	}
 
 	return map[string]interface{}{
 		"memtable_record_count": totalMem,
 		"learned_indexes_count": totalIndex,
+		"sstable_count":         totalSST,
 		"shards_active":         hs.conf.System.ShardCount,
 		"pending_writes":        len(hs.writeCh),
 		"rw_ratio":              hs.stats.GetReadWriteRatio(),
@@ -350,6 +423,7 @@ func (hs *HybridStore) Reset() error {
 		hs.shards[i].mutex.Lock()
 		hs.shards[i].mutableMem = memory.NewMemTable(32)
 		hs.shards[i].learnedIndexes = make([]*learned.LearnedIndex, 0)
+		hs.shards[i].sstables = make([]*sstable.SSTable, 0)
 		hs.shards[i].bloom = structure.NewBloomFilter(hs.conf.System.BloomSize, hs.conf.System.BloomFalseProb)
 		hs.shards[i].mutex.Unlock()
 	}

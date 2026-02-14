@@ -59,7 +59,7 @@
         .status-indicator { display: flex; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
         .dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; margin-right: 6px; }
 
-        /* Metrics Grid - Updated to 6 columns for Sharding info */
+        /* Metrics Grid - 6 columns */
         .metrics {
             display: grid;
             grid-template-columns: repeat(6, 1fr); 
@@ -79,8 +79,9 @@
         .metric-value { font-family: var(--font-mono); font-size: 20px; color: var(--text-primary); margin-top: 4px; }
         .metric-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
 
-        /* Highlight for the Queue */
+        /* Highlight Colors */
         .val-queue { color: var(--warning); }
+        .val-sst { color: var(--accent); }
 
         /* Main Layout */
         .layout { display: flex; gap: 20px; flex: 1; min-height: 0; }
@@ -186,38 +187,38 @@
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge badge-live">v2.5 WAL-Core</span></h1>
+        <h1>NeuroDB <span class="badge badge-live">v2.6 SSTable</span></h1>
         <div class="status-indicator">
             <div class="dot"></div>
-            <span>Engine: Sharded + WAL Persistence</span>
+            <span>Engine: Sharded + LSM-Tree</span>
         </div>
     </header>
 
     <div class="metrics">
-        <div class="metric-card">
-            <div class="metric-label">Workload Mode</div>
-            <div class="metric-value" id="modeVal">--</div>
-            <div class="metric-sub">Optimizer Status</div>
-        </div>
         <div class="metric-card">
             <div class="metric-label">WAL Buffer</div>
             <div class="metric-value val-queue" id="queueVal">0</div>
             <div class="metric-sub">Pending Writes</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">Total MemTable</div>
+            <div class="metric-label">MemTable</div>
             <div class="metric-value" id="memVal">0</div>
-            <div class="metric-sub">Records in RAM</div>
+            <div class="metric-sub">RAM Records</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Disk SSTables</div>
+            <div class="metric-value val-sst" id="sstVal">0</div>
+            <div class="metric-sub">Flushed Files</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Learned Index</div>
+            <div class="metric-value" id="modelVal">0</div>
+            <div class="metric-sub">Segments</div>
         </div>
         <div class="metric-card">
             <div class="metric-label">Active Shards</div>
             <div class="metric-value" id="shardVal" style="color: var(--accent);">--</div>
             <div class="metric-sub">Parallel Units</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Total Segments</div>
-            <div class="metric-value" id="modelVal">0</div>
-            <div class="metric-sub">Learned Indexes</div>
         </div>
         <div class="metric-card">
             <div class="metric-label">R/W Ratio</div>
@@ -230,17 +231,17 @@
         <div class="col-left">
             
             <div class="panel">
-                <div class="panel-title">Write Operations</div>
+                <div class="panel-title">Data Ingestion</div>
                 <div class="form-row group-input">
                     <input type="number" id="putKey" placeholder="ID">
                     <input type="text" id="putVal" placeholder="Payload">
                     <button onclick="doPut()">Put</button>
                 </div>
-                <button class="btn-block" onclick="triggerIngest()">Start Batch Ingest (50k)</button>
+                <button class="btn-block" onclick="triggerIngest()">Batch Ingest (100k)</button>
             </div>
 
             <div class="panel">
-                <div class="panel-title">Spatial Indexing (Z-Order)</div>
+                <div class="panel-title">Spatial Query (Z-Order)</div>
                 <div class="form-row group-input">
                     <input type="number" id="mx" placeholder="X" value="100">
                     <input type="number" id="my" placeholder="Y" value="200">
@@ -270,7 +271,7 @@
                 <div class="form-row">
                     <button class="btn-block" onclick="downloadCSV()">Export Model CSV</button>
                 </div>
-                <button class="btn-block btn-danger" onclick="resetDB()">Reset Kernel State</button>
+                <button class="btn-block btn-danger" onclick="resetDB()">Reset & Clear Disk</button>
             </div>
         </div>
 
@@ -306,7 +307,7 @@
             </div>
 
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">Kernel initialized. Backend: Custom WAL. Shards: 16.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB v2.6 Ready. SSTable Engine Active.</span></div>
             </div>
         </div>
     </div>
@@ -336,28 +337,20 @@
                 const data = await res.json();
                 
                 document.getElementById('memVal').innerText = data.memtable_record_count.toLocaleString();
+                document.getElementById('sstVal').innerText = (data.sstable_count || 0).toLocaleString(); // Updated for SST
                 document.getElementById('modelVal').innerText = data.learned_indexes_count;
                 document.getElementById('rwVal').innerText = parseFloat(data.rw_ratio).toFixed(2);
-                document.getElementById('shardVal').innerText = data.shards_active || "--"; // New Shard Metric
+                document.getElementById('shardVal').innerText = data.shards_active || "--";
                 
                 // WAL Buffer Queue
                 const queueSize = data.pending_writes || 0;
                 const qEl = document.getElementById('queueVal');
                 qEl.innerText = queueSize.toLocaleString();
                 
-                // Visual Alert for Queue Backpressure
                 if (queueSize > 2000) qEl.style.color = '#da3633'; // Red
                 else if (queueSize > 500) qEl.style.color = '#d29922'; // Yellow
                 else qEl.style.color = '#1f6feb'; // Blue
 
-                const modeEl = document.getElementById('modeVal');
-                if (data.mode && data.mode.includes("AI")) {
-                    modeEl.innerText = "AI-Optimized";
-                    modeEl.style.color = "var(--success)";
-                } else {
-                    modeEl.innerText = "Write-Heavy";
-                    modeEl.style.color = "var(--text-primary)";
-                }
             } catch(e) {}
         }
         setInterval(updateStats, 1000);
@@ -369,17 +362,17 @@
             if(isNaN(k)) return;
             try {
                 await fetch('/api/put', { method:'POST', body: JSON.stringify({key:k, value:v})});
-                log(`Write: Key=${k} (To WAL)`, 'ok');
+                log(`Write: Key=${k}`, 'ok');
                 document.getElementById('putKey').value = k+1;
             } catch(e) { log("Put failed: " + e, 'err'); }
         }
 
         async function triggerIngest() {
-            if(!confirm("Initiate batch ingestion (50k records)? This will test WAL throughput.")) return;
+            if(!confirm("Initiate batch ingestion (100k records)?")) return;
             log("Starting high-throughput ingestion...", 'sys');
             try {
                 await fetch('/api/ingest', { method:'POST'});
-                setTimeout(() => log("Ingestion running in background (Check WAL Buffer)...", 'sys'), 1000);
+                setTimeout(() => log("Ingestion running... Watch Disk SSTables count!", 'sys'), 1000);
             } catch(e) { log(e, 'err'); }
         }
 
@@ -391,7 +384,6 @@
                 const res = await fetch('/api/mocap/put', { method:'POST', body: JSON.stringify({x,y,z, data:"Frame"})});
                 const d = await res.json();
                 log(`Spatial Index: (${x},${y},${z}) -> Z-Key: ${d.spatial_key}`, 'sys');
-                // Auto increment for easier testing
                 document.getElementById('mx').value = x+1;
             } catch(e) { log(e, 'err'); }
         }
@@ -418,10 +410,6 @@
                 const res = await fetch(`/api/scan?start=${s}&end=${e}`);
                 const d = await res.json();
                 log(`Scan Result: Found ${d.count} records.`, 'ok');
-                if(d.count > 0 && d.count < 20) {
-                     const keys = d.data.map(r => r.Key).join(", ");
-                     log(`> Keys: [${keys}]`, 'info');
-                }
             } catch(e) { log(e, 'err'); }
         }
 
@@ -450,13 +438,13 @@
             finally { btn.innerText = originalText; btn.disabled = false; }
         }
 
+        // [核心优化] 动态自适应热力图
         async function loadHeatmap() {
             const cvs = document.getElementById('heatCanvas');
             const ctx = cvs.getContext('2d');
             const W = cvs.width;
             const H = cvs.height;
 
-            // Clear & Draw Axis
             ctx.fillStyle = '#010409';
             ctx.fillRect(0,0,W,H);
             ctx.strokeStyle = '#30363d';
@@ -477,32 +465,33 @@
                 const maxK = data[data.length-1].k;
                 const rangeK = maxK - minK || 1;
 
-let maxErrAbs = 0;
-data.forEach(p => {
-    const absE = Math.abs(p.e);
-    if (absE > maxErrAbs) maxErrAbs = absE;
-});
+                // 1. 动态计算最大误差
+                let maxErrAbs = 0;
+                data.forEach(p => {
+                    const absE = Math.abs(p.e);
+                    if (absE > maxErrAbs) maxErrAbs = absE;
+                });
+                if (maxErrAbs === 0) maxErrAbs = 1;
 
-if (maxErrAbs === 0) maxErrAbs = 1;
+                // 2. 计算缩放因子 (留 10% 边距)
+                const scaleFactor = ((H / 2) / maxErrAbs) * 0.9;
 
-const scaleFactor = ((H / 2) / maxErrAbs) * 0.9;
+                // 3. 绘制
+                data.forEach(p => {
+                    const x = ((p.k - minK) / rangeK) * W;
+                    let y = (H/2) - (p.e * scaleFactor);
 
-data.forEach(p => {
-    const x = ((p.k - minK) / rangeK) * W;
-    
-    let y = (H/2) - (p.e * scaleFactor);
+                    if(y < 0) y = 0;
+                    if(y > H) y = H;
 
-    if(y < 0) y = 0;
-    if(y > H) y = H;
+                    const errMag = Math.abs(p.e);
+                    if(errMag < 5) ctx.fillStyle = '#238636';     
+                    else if(errMag < 20) ctx.fillStyle = '#d29922'; 
+                    else ctx.fillStyle = '#da3633';                 
 
-    const errMag = Math.abs(p.e);
-    if(errMag < 5) ctx.fillStyle = '#238636';     
-    else if(errMag < 20) ctx.fillStyle = '#d29922'; 
-    else ctx.fillStyle = '#da3633';                 
-
-    ctx.fillRect(x, y, 2, 2);
-});
-                log(`Heatmap updated with ${data.length} points (Sampled from active shard).`, 'ok');
+                    ctx.fillRect(x, y, 2, 2);
+                });
+                log(`Heatmap updated (${data.length} pts, Scale: 1:${scaleFactor.toFixed(2)})`, 'ok');
 
             } catch(e) { log("Error loading heatmap: " + e, 'err'); }
         }
@@ -511,10 +500,10 @@ data.forEach(p => {
         function downloadCSV() { window.location.href = "/api/export"; }
         
         async function resetDB() {
-            if(!confirm("WARNING: This will wipe the WAL and reset all shards. Continue?")) return;
+            if(!confirm("WARNING: This will wipe WAL & SSTables. Continue?")) return;
             try {
                 await fetch('/api/reset');
-                log("Kernel & WAL reset successfully.", 'sys');
+                log("Kernel, WAL & SSTables reset successfully.", 'sys');
                 document.getElementById('valB').innerText = "--";
                 document.getElementById('valAI').innerText = "--";
                 const cvs = document.getElementById('heatCanvas');
