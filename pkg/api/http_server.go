@@ -18,7 +18,7 @@ import (
 
 type Server struct {
 	store       *core.HybridStore
-	ingestCount int64
+	ingestCount atomic.Int64 // use atomic.Int64 for correct alignment on 32-bit/ARM
 }
 
 func NewServer(store *core.HybridStore) *Server {
@@ -216,7 +216,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	atomic.StoreInt64(&s.ingestCount, 0)
+	s.ingestCount.Store(0)
 
 	go func() {
 		log.Println("[API] Starting randomized auto-ingestion...")
@@ -229,7 +229,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 			val := fmt.Sprintf("neuro-data-%d", currentKey)
 			s.store.Put(common.KeyType(currentKey), []byte(val))
 
-			atomic.AddInt64(&s.ingestCount, 1)
+			s.ingestCount.Add(1)
 			if i%1000 == 0 {
 				time.Sleep(1 * time.Millisecond)
 			}
@@ -242,7 +242,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleIngestStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	count := atomic.LoadInt64(&s.ingestCount)
+	count := s.ingestCount.Load()
 	json.NewEncoder(w).Encode(map[string]int64{"ingested": count})
 }
 
