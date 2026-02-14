@@ -108,7 +108,7 @@
 
         /* Inputs & Buttons */
         .form-row { display: flex; gap: -1px; margin-bottom: 8px; }
-        .group-input input:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+        .group-input input:first-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
         .group-input input:not(:first-child) { border-radius: 0; margin-left: -1px; }
         .group-input button { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
 
@@ -187,7 +187,7 @@
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge badge-live">v2.6 SSTable</span></h1>
+        <h1>NeuroDB <span class="badge badge-live">v2.7 SSTable</span></h1>
         <div class="status-indicator">
             <div class="dot"></div>
             <span>Engine: Sharded + LSM-Tree</span>
@@ -221,9 +221,9 @@
             <div class="metric-sub">Parallel Units</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">R/W Ratio</div>
-            <div class="metric-value" id="rwVal">0.00</div>
-            <div class="metric-sub">Global Stat</div>
+            <div class="metric-label">Ingest Progress</div>
+            <div class="metric-value" id="ingestVal">--</div>
+            <div class="metric-sub">Auto-Insert</div>
         </div>
     </div>
 
@@ -231,12 +231,17 @@
         <div class="col-left">
             
             <div class="panel">
-                <div class="panel-title">Data Ingestion</div>
+                <div class="panel-title">Data Operations</div>
                 <div class="form-row group-input">
                     <input type="number" id="putKey" placeholder="ID">
                     <input type="text" id="putVal" placeholder="Payload">
                     <button onclick="doPut()">Put</button>
                 </div>
+                <div class="form-row group-input" style="margin-top: 8px;">
+                    <input type="number" id="delKey" placeholder="Delete ID">
+                    <button class="btn-danger" onclick="doDel()">Delete</button>
+                </div>
+                <div style="height: 8px;"></div>
                 <button class="btn-block" onclick="triggerIngest()">Batch Ingest (100k)</button>
             </div>
 
@@ -307,7 +312,7 @@
             </div>
 
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB v2.6 Ready. SSTable Engine Active.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB v2.7 Ready. SSTable Engine Active.</span></div>
             </div>
         </div>
     </div>
@@ -332,24 +337,29 @@
         // --- Metrics Polling ---
         async function updateStats() {
             try {
+                // Main Stats
                 const res = await fetch('/api/stats');
-                if (!res.ok) return;
-                const data = await res.json();
-                
-                document.getElementById('memVal').innerText = data.memtable_record_count.toLocaleString();
-                document.getElementById('sstVal').innerText = (data.sstable_count || 0).toLocaleString(); // Updated for SST
-                document.getElementById('modelVal').innerText = data.learned_indexes_count;
-                document.getElementById('rwVal').innerText = parseFloat(data.rw_ratio).toFixed(2);
-                document.getElementById('shardVal').innerText = data.shards_active || "--";
-                
-                // WAL Buffer Queue
-                const queueSize = data.pending_writes || 0;
-                const qEl = document.getElementById('queueVal');
-                qEl.innerText = queueSize.toLocaleString();
-                
-                if (queueSize > 2000) qEl.style.color = '#da3633'; // Red
-                else if (queueSize > 500) qEl.style.color = '#d29922'; // Yellow
-                else qEl.style.color = '#1f6feb'; // Blue
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('memVal').innerText = data.memtable_record_count.toLocaleString();
+                    document.getElementById('sstVal').innerText = (data.sstable_count || 0).toLocaleString();
+                    document.getElementById('modelVal').innerText = data.learned_indexes_count;
+                    document.getElementById('shardVal').innerText = data.shards_active || "--";
+                    
+                    const queueSize = data.pending_writes || 0;
+                    const qEl = document.getElementById('queueVal');
+                    qEl.innerText = queueSize.toLocaleString();
+                    if (queueSize > 2000) qEl.style.color = '#da3633';
+                    else if (queueSize > 500) qEl.style.color = '#d29922';
+                    else qEl.style.color = '#1f6feb';
+                }
+
+                // Ingest Status
+                const resIngest = await fetch('/api/ingest/status');
+                if (resIngest.ok) {
+                    const d = await resIngest.json();
+                    document.getElementById('ingestVal').innerText = d.ingested.toLocaleString();
+                }
 
             } catch(e) {}
         }
@@ -367,12 +377,28 @@
             } catch(e) { log("Put failed: " + e, 'err'); }
         }
 
+        // [New] Delete Operation
+        async function doDel() {
+            const k = document.getElementById('delKey').value;
+            if(!k) return;
+            try {
+                const res = await fetch(`/api/del?key=${k}`, { method:'DELETE' });
+                if (res.ok) {
+                    log(`Delete: Key=${k}`, 'sys');
+                    document.getElementById('delKey').value = '';
+                } else {
+                    const txt = await res.text();
+                    log(`Delete failed: ${txt}`, 'err');
+                }
+            } catch(e) { log("Delete error: " + e, 'err'); }
+        }
+
         async function triggerIngest() {
             if(!confirm("Initiate batch ingestion (100k records)?")) return;
             log("Starting high-throughput ingestion...", 'sys');
             try {
                 await fetch('/api/ingest', { method:'POST'});
-                setTimeout(() => log("Ingestion running... Watch Disk SSTables count!", 'sys'), 1000);
+                setTimeout(() => log("Ingestion started. Watch 'Ingest Progress'.", 'sys'), 500);
             } catch(e) { log(e, 'err'); }
         }
 
@@ -394,8 +420,10 @@
             if(!k) return;
             try {
                 const res = await fetch(`/api/get?key=${k}`);
-                const d = await res.json();
-                if(res.ok) log(`Query Hit: Key=${k} (${d.latency_ns}ns)`, 'ok');
+                if(res.ok) {
+                    const d = await res.json();
+                    log(`Query Hit: Key=${k} (${d.latency_ns}ns) Val=${d.value}`, 'ok');
+                }
                 else log(`Query Miss: Key=${k}`, 'err');
             } catch(e) { log(`Error querying key ${k}`, 'err'); }
         }
@@ -405,7 +433,7 @@
             const e = document.getElementById('scanEnd').value;
             if(!s || !e) return;
             
-            log(`Scanning range [${s}, ${e}] across shards...`, 'sys');
+            log(`Scanning range [${s}, ${e}]...`, 'sys');
             try {
                 const res = await fetch(`/api/scan?start=${s}&end=${e}`);
                 const d = await res.json();

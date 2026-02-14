@@ -1,5 +1,6 @@
 server:
-  addr: ":8080"
+  addr: ":8080"      
+  tcp_addr: ":9090"  
 
 storage:
   path: "neuro_data"   
