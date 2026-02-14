@@ -151,7 +151,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		log.Println("[API] Starting randomized auto-ingestion...")
 		rand.Seed(time.Now().UnixNano())
 		currentKey := rand.Intn(1000000)
-		count := 50000
+		count := 1000000
 		for i := 0; i < count; i++ {
 			step := rand.Intn(5) + 1
 			currentKey += step

@@ -54,14 +54,15 @@
 
         h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-primary); letter-spacing: -0.02em; }
         .badge { font-family: var(--font-mono); font-size: 11px; background: var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text-secondary); margin-left: 8px; }
+        .badge-live { color: var(--success); border: 1px solid var(--success); background: rgba(35, 134, 54, 0.1); }
         
-        .status-indicator { display: flex; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--success); }
+        .status-indicator { display: flex; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
         .dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; margin-right: 6px; }
 
-        /* Metrics Grid - Updated to 5 columns */
+        /* Metrics Grid - Updated to 6 columns for Sharding info */
         .metrics {
             display: grid;
-            grid-template-columns: repeat(5, 1fr); /* Changed from 4 to 5 */
+            grid-template-columns: repeat(6, 1fr); 
             gap: 12px;
             margin-bottom: 20px;
             flex-shrink: 0;
@@ -185,8 +186,11 @@
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge">v2.3 Async-Kernel</span></h1>
-        <div class="status-indicator"><div class="dot"></div>System Online</div>
+        <h1>NeuroDB <span class="badge badge-live">v2.5 WAL-Core</span></h1>
+        <div class="status-indicator">
+            <div class="dot"></div>
+            <span>Engine: Sharded + WAL Persistence</span>
+        </div>
     </header>
 
     <div class="metrics">
@@ -196,24 +200,29 @@
             <div class="metric-sub">Optimizer Status</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">Async Queue</div>
+            <div class="metric-label">WAL Buffer</div>
             <div class="metric-value val-queue" id="queueVal">0</div>
             <div class="metric-sub">Pending Writes</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">MemTable</div>
+            <div class="metric-label">Total MemTable</div>
             <div class="metric-value" id="memVal">0</div>
-            <div class="metric-sub">Buffered Records</div>
+            <div class="metric-sub">Records in RAM</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">LSM Segments</div>
+            <div class="metric-label">Active Shards</div>
+            <div class="metric-value" id="shardVal" style="color: var(--accent);">--</div>
+            <div class="metric-sub">Parallel Units</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Total Segments</div>
             <div class="metric-value" id="modelVal">0</div>
-            <div class="metric-sub">Compaction Level 0</div>
+            <div class="metric-sub">Learned Indexes</div>
         </div>
         <div class="metric-card">
             <div class="metric-label">R/W Ratio</div>
             <div class="metric-value" id="rwVal">0.00</div>
-            <div class="metric-sub">Bloom Filter: Active</div>
+            <div class="metric-sub">Global Stat</div>
         </div>
     </div>
 
@@ -297,7 +306,7 @@
             </div>
 
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">Kernel initialized. Async I/O & Visualization enabled.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">Kernel initialized. Backend: Custom WAL. Shards: 16.</span></div>
             </div>
         </div>
     </div>
@@ -329,15 +338,17 @@
                 document.getElementById('memVal').innerText = data.memtable_record_count.toLocaleString();
                 document.getElementById('modelVal').innerText = data.learned_indexes_count;
                 document.getElementById('rwVal').innerText = parseFloat(data.rw_ratio).toFixed(2);
+                document.getElementById('shardVal').innerText = data.shards_active || "--"; // New Shard Metric
                 
-                // [Update] 显示待写入队列长度
+                // WAL Buffer Queue
                 const queueSize = data.pending_writes || 0;
                 const qEl = document.getElementById('queueVal');
                 qEl.innerText = queueSize.toLocaleString();
-                // 简单的视觉告警
-                if (queueSize > 500) qEl.style.color = '#da3633'; // Red
-                else if (queueSize > 100) qEl.style.color = '#d29922'; // Yellow
-                else qEl.style.color = '#1f6feb'; // Blue/Normal
+                
+                // Visual Alert for Queue Backpressure
+                if (queueSize > 2000) qEl.style.color = '#da3633'; // Red
+                else if (queueSize > 500) qEl.style.color = '#d29922'; // Yellow
+                else qEl.style.color = '#1f6feb'; // Blue
 
                 const modeEl = document.getElementById('modeVal');
                 if (data.mode && data.mode.includes("AI")) {
@@ -358,17 +369,17 @@
             if(isNaN(k)) return;
             try {
                 await fetch('/api/put', { method:'POST', body: JSON.stringify({key:k, value:v})});
-                log(`Write: Key=${k} (Queued)`, 'ok');
+                log(`Write: Key=${k} (To WAL)`, 'ok');
                 document.getElementById('putKey').value = k+1;
             } catch(e) { log("Put failed: " + e, 'err'); }
         }
 
         async function triggerIngest() {
-            if(!confirm("Initiate batch ingestion (50k records)?")) return;
-            log("Starting ingestion process...", 'sys');
+            if(!confirm("Initiate batch ingestion (50k records)? This will test WAL throughput.")) return;
+            log("Starting high-throughput ingestion...", 'sys');
             try {
                 await fetch('/api/ingest', { method:'POST'});
-                setTimeout(() => log("Ingestion simulation continuing in background...", 'sys'), 1000);
+                setTimeout(() => log("Ingestion running in background (Check WAL Buffer)...", 'sys'), 1000);
             } catch(e) { log(e, 'err'); }
         }
 
@@ -402,7 +413,7 @@
             const e = document.getElementById('scanEnd').value;
             if(!s || !e) return;
             
-            log(`Scanning range [${s}, ${e}]...`, 'sys');
+            log(`Scanning range [${s}, ${e}] across shards...`, 'sys');
             try {
                 const res = await fetch(`/api/scan?start=${s}&end=${e}`);
                 const d = await res.json();
@@ -427,7 +438,6 @@
                 document.getElementById('valAI').innerText = d.ai_avg_ns;
                 document.getElementById('speedupVal').innerText = d.speedup + " Speedup";
                 
-                // Parse "123.45 ns" to float for bar width calc
                 const valB = parseFloat(d.btree_avg_ns);
                 const valAI = parseFloat(d.ai_avg_ns);
                 const max = Math.max(valB, valAI);
@@ -463,27 +473,36 @@
                     return;
                 }
 
-                // Normalize Keys for X-axis
                 const minK = data[0].k;
                 const maxK = data[data.length-1].k;
                 const rangeK = maxK - minK || 1;
 
-                data.forEach(p => {
-                    const x = ((p.k - minK) / rangeK) * W;
-                    // Scale Error: Assume typical error range is within -50 to +50
-                    let y = (H/2) - (p.e * 2); 
-                    
-                    if(y < 0) y = 0;
-                    if(y > H) y = H;
+let maxErrAbs = 0;
+data.forEach(p => {
+    const absE = Math.abs(p.e);
+    if (absE > maxErrAbs) maxErrAbs = absE;
+});
 
-                    const errMag = Math.abs(p.e);
-                    if(errMag < 5) ctx.fillStyle = '#238636';      // Green
-                    else if(errMag < 20) ctx.fillStyle = '#d29922'; // Yellow
-                    else ctx.fillStyle = '#da3633';                 // Red
+if (maxErrAbs === 0) maxErrAbs = 1;
 
-                    ctx.fillRect(x, y, 2, 2);
-                });
-                log(`Heatmap updated with ${data.length} points.`, 'ok');
+const scaleFactor = ((H / 2) / maxErrAbs) * 0.9;
+
+data.forEach(p => {
+    const x = ((p.k - minK) / rangeK) * W;
+    
+    let y = (H/2) - (p.e * scaleFactor);
+
+    if(y < 0) y = 0;
+    if(y > H) y = H;
+
+    const errMag = Math.abs(p.e);
+    if(errMag < 5) ctx.fillStyle = '#238636';     
+    else if(errMag < 20) ctx.fillStyle = '#d29922'; 
+    else ctx.fillStyle = '#da3633';                 
+
+    ctx.fillRect(x, y, 2, 2);
+});
+                log(`Heatmap updated with ${data.length} points (Sampled from active shard).`, 'ok');
 
             } catch(e) { log("Error loading heatmap: " + e, 'err'); }
         }
@@ -492,11 +511,10 @@
         function downloadCSV() { window.location.href = "/api/export"; }
         
         async function resetDB() {
-            if(!confirm("WARNING: This will wipe all data and reset the kernel. Continue?")) return;
+            if(!confirm("WARNING: This will wipe the WAL and reset all shards. Continue?")) return;
             try {
                 await fetch('/api/reset');
-                log("Kernel state reset successfully.", 'sys');
-                // Clear visualizations
+                log("Kernel & WAL reset successfully.", 'sys');
                 document.getElementById('valB').innerText = "--";
                 document.getElementById('valAI').innerText = "--";
                 const cvs = document.getElementById('heatCanvas');

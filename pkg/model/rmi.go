@@ -1,18 +1,20 @@
 package model
 
-import "neurodb/pkg/common"
+import (
+	"neurodb/pkg/common"
+)
 
 type RMIModel struct {
 	GlobalMin common.KeyType
 	GlobalMax common.KeyType
 	Fanout    int
-	Buckets   []*LinearModel
+	Buckets   []LinearModel
 }
 
 func NewRMIModel(fanout int) *RMIModel {
 	return &RMIModel{
 		Fanout:  fanout,
-		Buckets: make([]*LinearModel, fanout),
+		Buckets: make([]LinearModel, fanout),
 	}
 }
 
@@ -27,11 +29,6 @@ func (rmi *RMIModel) Train(keys []common.KeyType) {
 	keyRange := float64(rmi.GlobalMax - rmi.GlobalMin)
 	if keyRange == 0 {
 		keyRange = 1
-	}
-
-	segments := make([][]common.KeyType, rmi.Fanout)
-	for i := 0; i < rmi.Fanout; i++ {
-		segments[i] = make([]common.KeyType, 0)
 	}
 
 	bucketKeys := make([][]common.KeyType, rmi.Fanout)
@@ -51,8 +48,7 @@ func (rmi *RMIModel) Train(keys []common.KeyType) {
 	}
 
 	for i := 0; i < rmi.Fanout; i++ {
-		rmi.Buckets[i] = NewLinearModel()
-		rmi.Buckets[i].TrainWithPos(bucketKeys[i], bucketPoss[i])
+		(&rmi.Buckets[i]).TrainWithPos(bucketKeys[i], bucketPoss[i])
 	}
 }
 
@@ -87,5 +83,5 @@ func (rmi *RMIModel) Update(key common.KeyType, pos int) {
 		bucketIdx = 0
 	}
 
-	rmi.Buckets[bucketIdx].Update(key, pos)
+	(&rmi.Buckets[bucketIdx]).Update(key, pos)
 }
