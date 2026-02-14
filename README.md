@@ -8,66 +8,113 @@
 
 **NeuroDB** is a next-generation key-value storage engine designed for **Metaverse** and **High-Frequency Motion Capture** workloads. It implements a full **LSM-Tree (Log-Structured Merge Tree)** architecture from scratch, bridging the gap between traditional disk-based storage and cutting-edge **Learned Index** technology.
 
-> **v2.6 SSTable Engine Update**: Now features **Native WAL**, **Disk SSTables**, **Background Compaction**, and a **High-Performance TCP Protocol**.
+> **v2.8 Release**: Now supports **Range Scans**, **Tombstone Deletes**, **Persistence Recovery**, and a robust **TCP Client SDK**.
 
 ---
 
 ## Key Features
 
 ### 1. Industrial-Grade Storage Engine (LSM-Tree)
-* **Write-Ahead Log (WAL)**: Ensures data durability. All writes are appended to a WAL file with CRC32 checksums before hitting memory.
-* **MemTable**: Sharded in-memory B-Tree acts as a write buffer for high throughput.
-* **SSTable (Sorted String Table)**: Immutable disk files. When MemTable fills up, data is flushed to disk efficiently.
-* **Compaction**: Background threads automatically merge small SSTables into larger ones using **K-Way Merge Sort**, reducing read amplification.
-* **Memory Offloading**: "Cold" data is unloaded from RAM to Disk, keeping memory footprint low while supporting datasets larger than RAM.
+* **Write-Ahead Log (WAL)**: Ensures data durability. Writes are appended to WAL with CRC32 checksums.
+* **MemTable**: Sharded in-memory B-Tree acts as a high-throughput write buffer.
+* **SSTable & Compaction**: Asynchronous flushing to disk and background **K-Way Merge Compaction** to reduce read amplification.
+* **Tombstone Deletes**: logical deletion support with garbage collection during compaction.
 
 ### 2. High-Performance Networking
-* **Binary TCP Protocol**: Replaced HTTP/JSON with a custom lightweight binary protocol.
-* **Benchmarks**: Achieved **~1.86x speedup** (12,000+ QPS) compared to the HTTP implementation.
-* **Go SDK**: Provides a native `client` package for seamless integration.
+* **Binary TCP Protocol**: Custom lightweight protocol supporting `Put`, `Get`, `Delete`, and `Scan`.
+* **Zero-Copy Serialization**: Efficient encoding/decoding for high-throughput motion data streams.
+* **Resilient SDK**: Go client with automatic reconnection and retry policies.
 
-### 3. Spatial Intelligence
-* **Z-Order Curve**: Maps 3D motion data $(x, y, z)$ into 1D integer keys, preserving spatial locality.
-* **Octree Decomposition**: Supports efficient 3D range queries (Scanning a 3D box) by decomposing spatial volumes into continuous Z-value intervals.
-
-### 4. AI-Accelerated Lookups
-* **Learned Index**: Uses Recursive Model Indexes (RMI) to approximate data distribution in memory, acting as a faster alternative to Bloom Filters for range queries.
-* **Real-time Visualization**: Built-in dashboard visualizes model prediction errors (Heatmap).
+### 3. Spatial & AI Intelligence
+* **Z-Order Curve**: Maps 3D $(x, y, z)$ coordinates to 1D keys for spatial locality.
+* **Learned Index (RMI)**: Replaces traditional B-Trees/Bloom Filters in read path, using Recursive Model Indexes to predict data location with $O(1)$ theoretical complexity.
 
 ---
 
 ## Quick Start
 
 ### 1. Start the Server
-The server listens on **HTTP (:8080)** for the dashboard and **TCP (:9090)** for high-performance clients.
+The server listens on **HTTP (:8080)** for the dashboard and **TCP (:9090)** for the binary protocol.
 
 ```bash
+# Start with default config
 go run cmd/server/main.go
 ```
 
 ## 2. Use the CLI Tool
-###Interact with the database using the built-in command-line interface.
+###The CLI now supports full CRUD operations and custom server addresses.
 ```bash
-go run cmd/cli/main.go
+go run cmd/cli/main.go -addr localhost:9090
 
-# Usage inside CLI:
-neuro> put 1001 hello_world
-OK (125µs)
+# Inside CLI:
+neuro> put 1001 motion_frame_data
+OK (120µs)
+
 neuro> get 1001
-"hello_world" (80µs)
+"motion_frame_data" (45µs)
+
+neuro> del 1001
+Deleted (15µs)
+
+neuro> scan 1000 2000
+Scanning range [1000, 2000]...
+Found 5 records:
+  [1002] -> frame_x
+  [1005] -> frame_y
+  ...
 ```
 
 ## 3. Run Benchmarks
-###Compare HTTP vs. TCP performance.
+###Compare TCP vs HTTP performance across Write, Read, and Scan workloads.
 ```bash
 go run cmd/benchmark/main.go
 ```
 
 ## 4.Visual Dashboard
 ###Open your browser and navigate to: http://localhost:8080
-* **Metrics**: Watch WAL Buffer, SSTable count, and Memory usage in real-time.
-* **Heatmap**: Visualize AI model accuracy.
-* **Ingest**: Trigger batch writes to see Flush and Compaction in action.
+* **LSM Metrics**: WAL Queue, MemTable Size, SSTable Count.
+* **AI Diagnostics**: Real-time Error Heatmap of the Learned Index model.
+* **Control Panel**: Trigger manual ingestion, compaction, or system reset.
+
+##Configuration (*configs/neuro.yaml*)
+```yaml
+server:
+  addr: ":8080"      # Web Dashboard & HTTP API
+  tcp_addr: ":9090"  # Binary Protocol Port
+
+storage:
+  path: "neuro_data" # Data persistence directory
+  wal_buffer_size: 10000
+
+system:
+  shard_count: 16    # Concurrency shards
+  bloom_size: 200000 # Bloom filter capacity per shard
+```
+##API Reference (Go SDK)
+```Go
+import "neurodb/pkg/client"
+
+func main() {
+    // Connect with timeout and keep-alive
+    cli, _ := client.Dial("localhost:9090")
+    defer cli.Close()
+
+    // 1. Write
+    cli.Put(10086, []byte("MotionData_Frame_1"))
+
+    // 2. Read (Learned Index Accelerated)
+    val, _ := cli.Get(10086)
+
+    // 3. Range Scan (LSM-Tree Merge Sort)
+    records, _ := cli.Scan(10000, 10100)
+    for _, r := range records {
+        fmt.Println(r.Key, string(r.Value))
+    }
+    
+    // 4. Delete
+    cli.Delete(10086)
+}
+```
 
 ##Architecture
 ```Plaintext
@@ -106,21 +153,6 @@ go run cmd/benchmark/main.go
 │   ├── common/      # Spatial (Z-Order) Utils
 │   └── learned/     # RMI Model Logic
 └── static/          # Web Console (HTML/JS)
-```
-
-##API Reference (TCP SDK)
-```Go
-import "neurodb/pkg/client"
-
-// Connect
-cli, _ := client.Dial("localhost:9090")
-defer cli.Close()
-
-// Write (Microsecond latency)
-cli.Put(10086, []byte("MotionData_Frame_1"))
-
-// Read
-val, _ := cli.Get(10086)
 ```
 
 ## Citation
