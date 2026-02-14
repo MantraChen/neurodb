@@ -13,7 +13,8 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Addr string `yaml:"addr"` // e.g. ":8080"
+	Addr    string `yaml:"addr"`     // HTTP Listen Address (e.g. :8080)
+	TCPAddr string `yaml:"tcp_addr"` // TCP Listen Address (e.g. :9090)
 }
 
 type StorageConfig struct {
@@ -29,9 +30,12 @@ type SystemConfig struct {
 
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
-		Server: ServerConfig{Addr: ":8080"},
+		Server: ServerConfig{
+			Addr:    ":8080",
+			TCPAddr: ":9090",
+		},
 		Storage: StorageConfig{
-			Path:          "neuro.db",
+			Path:          "neuro_data",
 			WalBufferSize: 5000,
 		},
 		System: SystemConfig{

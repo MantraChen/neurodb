@@ -32,7 +32,7 @@ func (c *Client) Put(key int64, value []byte) error {
 	binary.BigEndian.PutUint64(keyBuf, uint64(key))
 
 	if err := protocol.Encode(c.conn, protocol.OpPut, keyBuf, value); err != nil {
-		return c.reconnectAndRetry(protocol.OpPut, keyBuf, value, nil)
+		return c.reconnectAndRetry(protocol.OpPut, keyBuf, value)
 	}
 
 	return c.expectOK()
@@ -53,12 +53,14 @@ func (c *Client) Get(key int64) ([]byte, error) {
 		return val, err
 	}
 
-	if pkg.Op == protocol.RespVal {
+	switch pkg.Op {
+	case protocol.RespVal:
 		return pkg.Value, nil
-	} else if pkg.Op == protocol.RespErr {
+	case protocol.RespErr:
 		return nil, errors.New("key not found")
+	default:
+		return nil, errors.New("unknown response")
 	}
-	return nil, errors.New("unknown response")
 }
 
 func (c *Client) Delete(key int64) error {
@@ -66,7 +68,7 @@ func (c *Client) Delete(key int64) error {
 	binary.BigEndian.PutUint64(keyBuf, uint64(key))
 
 	if err := protocol.Encode(c.conn, protocol.OpDel, keyBuf, nil); err != nil {
-		return c.reconnectAndRetry(protocol.OpDel, keyBuf, nil, nil)
+		return c.reconnectAndRetry(protocol.OpDel, keyBuf, nil)
 	}
 
 	return c.expectOK()
@@ -78,7 +80,6 @@ func (c *Client) Scan(start, end int64) ([]common.Record, error) {
 	binary.BigEndian.PutUint64(startBuf, uint64(start))
 	binary.BigEndian.PutUint64(endBuf, uint64(end))
 
-	// Protocol trick: Key=Start, Value=End
 	if err := protocol.Encode(c.conn, protocol.OpScan, startBuf, endBuf); err != nil {
 		data, err := c.reconnectAndRetryValues(protocol.OpScan, startBuf, endBuf)
 		if err != nil {
@@ -117,7 +118,7 @@ func (c *Client) expectOK() error {
 	return nil
 }
 
-func (c *Client) reconnectAndRetry(op byte, key, val []byte, extra []byte) error {
+func (c *Client) reconnectAndRetry(op byte, key, val []byte) error {
 	c.conn.Close()
 	conn, err := net.DialTimeout("tcp", c.addr, 5*time.Second)
 	if err != nil {
