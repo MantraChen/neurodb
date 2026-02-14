@@ -36,24 +36,6 @@ func (rmi *RMIModel) Train(keys []common.KeyType) {
 		segments[i] = make([]common.KeyType, 0)
 	}
 
-	for _, key := range keys {
-		bucketIdx := int(float64(key-rmi.globalMin) / keyRange * float64(rmi.fanout))
-
-		if bucketIdx >= rmi.fanout {
-			bucketIdx = rmi.fanout - 1
-		}
-		if bucketIdx < 0 {
-			bucketIdx = 0
-		}
-
-		segments[bucketIdx] = append(segments[bucketIdx], key)
-	}
-
-	for i := 0; i < rmi.fanout; i++ {
-		lm := NewLinearModel()
-		rmi.buckets[i] = lm
-	}
-
 	bucketKeys := make([][]common.KeyType, rmi.fanout)
 	bucketPoss := make([][]int, rmi.fanout)
 
@@ -91,4 +73,21 @@ func (rmi *RMIModel) Predict(key common.KeyType) int {
 	}
 
 	return rmi.buckets[bucketIdx].Predict(key)
+}
+
+func (rmi *RMIModel) Update(key common.KeyType, pos int) {
+	keyRange := float64(rmi.globalMax - rmi.globalMin)
+	if keyRange == 0 {
+		keyRange = 1
+	}
+
+	bucketIdx := int(float64(key-rmi.globalMin) / keyRange * float64(rmi.fanout))
+	if bucketIdx >= rmi.fanout {
+		bucketIdx = rmi.fanout - 1
+	}
+	if bucketIdx < 0 {
+		bucketIdx = 0
+	}
+
+	rmi.buckets[bucketIdx].Update(key, pos)
 }

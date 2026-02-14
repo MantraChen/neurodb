@@ -48,3 +48,27 @@ func compactBy3(x uint64) uint32 {
 func PrintBinary(n int64) string {
 	return fmt.Sprintf("%064b", n)
 }
+
+type ZRange struct {
+	Min int64
+	Max int64
+}
+
+func GetZRanges(minX, minY, minZ, maxX, maxY, maxZ uint32) ([]ZRange, error) {
+	start, err := Encode3D(minX, minY, minZ)
+	if err != nil {
+		return nil, err
+	}
+	end, err := Encode3D(maxX, maxY, maxZ)
+	if err != nil {
+		return nil, err
+	}
+	return []ZRange{{Min: start, Max: end}}, nil
+}
+
+func InRange(zCode int64, minX, minY, minZ, maxX, maxY, maxZ uint32) bool {
+	x, y, z := Decode3D(zCode)
+	return x >= minX && x <= maxX &&
+		y >= minY && y <= maxY &&
+		z >= minZ && z <= maxZ
+}

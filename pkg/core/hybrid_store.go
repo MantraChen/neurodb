@@ -23,6 +23,8 @@ type HybridStore struct {
 	backend storage.Backend
 	mutex   sync.RWMutex
 	stats   *monitor.WorkloadStats
+
+	compactionLock sync.Mutex
 }
 
 func NewHybridStore(dbPath string) *HybridStore {
@@ -63,7 +65,6 @@ func (hs *HybridStore) recoverFromDisk() {
 
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	hs.stats.RecordWrite()
-
 	hs.bloom.Add(key)
 
 	if err := hs.backend.Write(key, val); err != nil {
@@ -81,31 +82,40 @@ func (hs *HybridStore) adaptiveFlush() {
 	hs.mutex.Lock()
 	defer hs.mutex.Unlock()
 
-	if hs.mutableMem.Count() < 10000 {
+	if hs.mutableMem.Count() < 1000 {
 		return
 	}
 
 	ratio := hs.stats.GetReadWriteRatio()
 	log.Printf("[NeuroDB] Adapting Flush Strategy... (R/W Ratio: %.2f)", ratio)
 
+	var data []common.Record
+	hs.mutableMem.Iterator(func(key common.KeyType, val common.ValueType) bool {
+		data = append(data, common.Record{Key: key, Value: val})
+		return true
+	})
+
 	shouldTrainModel := ratio > 0.0001
+	canFineTune := shouldTrainModel && len(hs.learnedIndexes) > 0 && len(data) < 50000
 
-	if shouldTrainModel {
-		log.Println("[Optimizer] Workload is Read-Intensive. Training Model...")
-
+	if canFineTune {
+		log.Println("[Optimizer] Fine-tuning existing model (Incremental Learning)...")
 		start := time.Now()
 
-		var data []common.Record
-		hs.mutableMem.Iterator(func(key common.KeyType, val common.ValueType) bool {
-			data = append(data, common.Record{Key: key, Value: val})
-			return true
-		})
+		lastIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
+		lastIndex.Append(data)
+
+		log.Printf("[NeuroDB] Model Fine-tuned in %v. Total Records: %d", time.Since(start), lastIndex.Size())
+
+	} else if shouldTrainModel {
+		log.Println("[Optimizer] Workload is Read-Intensive. Training NEW Model...")
+		start := time.Now()
 
 		li := learned.Build(data)
 		hs.learnedIndexes = append(hs.learnedIndexes, li)
 
 		if len(hs.learnedIndexes) >= 4 {
-			hs.compact()
+			hs.triggerAsyncCompaction()
 		}
 
 		log.Printf("[NeuroDB] Model Trained in %v. Records: %d", time.Since(start), li.Size())
@@ -114,6 +124,62 @@ func (hs *HybridStore) adaptiveFlush() {
 	}
 
 	hs.mutableMem = memory.NewMemTable(32)
+}
+
+func (hs *HybridStore) triggerAsyncCompaction() {
+	if !hs.compactionLock.TryLock() {
+		return
+	}
+
+	go func() {
+		defer hs.compactionLock.Unlock()
+		log.Println("[Compaction] Background job started...")
+
+		start := time.Now()
+
+		hs.mutex.RLock()
+		totalLen := len(hs.learnedIndexes)
+		if totalLen < 2 {
+			hs.mutex.RUnlock()
+			return
+		}
+
+		mergeCount := totalLen - 1
+		indexesToMerge := hs.learnedIndexes[:mergeCount]
+
+		var totalRecords []common.Record
+		for _, idx := range indexesToMerge {
+			totalRecords = append(totalRecords, idx.GetAllRecords()...)
+		}
+		hs.mutex.RUnlock()
+
+		if len(totalRecords) == 0 {
+			return
+		}
+
+		log.Printf("[Compaction] Merging %d segments (%d records)...", mergeCount, len(totalRecords))
+		bigIndex := learned.Build(totalRecords)
+
+		hs.mutex.Lock()
+		defer hs.mutex.Unlock()
+
+		currentLen := len(hs.learnedIndexes)
+		if currentLen < mergeCount {
+			log.Println("[Compaction] Aborted due to state change.")
+			return
+		}
+
+		remaining := hs.learnedIndexes[mergeCount:]
+
+		newIndexes := make([]*learned.LearnedIndex, 0)
+		newIndexes = append(newIndexes, bigIndex)
+		newIndexes = append(newIndexes, remaining...)
+
+		hs.learnedIndexes = newIndexes
+
+		log.Printf("[Compaction] Finished in %v. Segments reduced from %d to %d.",
+			time.Since(start), currentLen, len(newIndexes))
+	}()
 }
 
 func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
@@ -145,13 +211,6 @@ func (hs *HybridStore) Close() {
 	hs.backend.Close()
 }
 
-func (hs *HybridStore) DebugPrint() {
-	hs.mutex.RLock()
-	defer hs.mutex.RUnlock()
-	log.Printf("Store Status: MemTable: %d, Learned Layers: %d",
-		hs.mutableMem.Count(), len(hs.learnedIndexes))
-}
-
 func (hs *HybridStore) Stats() map[string]interface{} {
 	hs.mutex.RLock()
 	defer hs.mutex.RUnlock()
@@ -170,18 +229,9 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 				return "Write-Intensive (Fast Mode)"
 			}
 		}(),
-
 		"bloom_bits": hs.bloom.Stats()["bloom_bits_size"],
 	}
-
 	return baseStats
-}
-
-type ModelDataPoint struct {
-	Key          int64
-	RealPos      int
-	PredictedPos int
-	Error        int
 }
 
 func (hs *HybridStore) ExportModelData() ([]learned.DiagnosticPoint, error) {
@@ -189,9 +239,8 @@ func (hs *HybridStore) ExportModelData() ([]learned.DiagnosticPoint, error) {
 	defer hs.mutex.RUnlock()
 
 	if len(hs.learnedIndexes) == 0 {
-		return nil, fmt.Errorf("no learned indexes available (try writing more data > 50k)")
+		return nil, fmt.Errorf("no learned indexes available")
 	}
-
 	latestIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
 	return latestIndex.ExportDiagnostics(), nil
 }
@@ -207,7 +256,6 @@ func (hs *HybridStore) Reset() error {
 	hs.mutableMem = memory.NewMemTable(32)
 	hs.learnedIndexes = make([]*learned.LearnedIndex, 0)
 	hs.stats = monitor.NewWorkloadStats()
-
 	hs.bloom = structure.NewBloomFilter(100000, 0.01)
 
 	return nil
@@ -221,32 +269,14 @@ func (hs *HybridStore) BenchmarkAlgo(iterations int) (float64, float64, error) {
 		return 0, 0, fmt.Errorf("no learned indexes available")
 	}
 	targetIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
-
 	return targetIndex.BenchmarkInternal(iterations)
 }
 
-func (hs *HybridStore) compact() {
-	start := time.Now()
-	log.Println("[Compaction] Triggered! Merging all index segments...")
-
-	var totalRecords []common.Record
-	for _, idx := range hs.learnedIndexes {
-		totalRecords = append(totalRecords, idx.GetAllRecords()...)
-	}
-
-	bigIndex := learned.Build(totalRecords)
-	hs.learnedIndexes = []*learned.LearnedIndex{bigIndex}
-
-	log.Printf("[Compaction] Done in %v. Merged %d records into 1 Giant Model.",
-		time.Since(start), len(totalRecords))
-}
-
 func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
-	hs.mutex.RLock() // 读锁即可
+	hs.mutex.RLock()
 	defer hs.mutex.RUnlock()
 
 	var results []common.Record
-
 	memItems := hs.mutableMem.Scan(start, end)
 	for _, item := range memItems {
 		results = append(results, common.Record{Key: item.Key, Value: item.Val})
@@ -256,6 +286,5 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 		res := li.Scan(start, end)
 		results = append(results, res...)
 	}
-
 	return results
 }
