@@ -2,6 +2,7 @@
 *.db
 *.db-shm
 *.db-wal
+*.db.wal
 
 # Index 训练模型文件
 *.index
