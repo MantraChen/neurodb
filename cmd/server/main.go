@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"neurodb/pkg/api"
+	"neurodb/pkg/config"
 	"neurodb/pkg/core"
 	"os"
 	"os/signal"
@@ -12,14 +13,19 @@ import (
 )
 
 func main() {
-	dbFile := "neuro.db"
+	log.Println("[Main] Loading configuration...")
+	cfg, err := config.Load("configs/neuro.yaml")
+	if err != nil {
+		log.Printf("[Warning] Failed to load config: %v. Using defaults.", err)
+	}
 
-	store := core.NewHybridStore(dbFile)
+	store := core.NewHybridStore(cfg)
+	log.Printf("[Main] NeuroDB Kernel initialized (Shards: %d, WAL Buffer: %d)",
+		cfg.System.ShardCount, cfg.Storage.WalBufferSize)
 
 	server := api.NewServer(store)
-
 	go func() {
-		server.Start(":8080")
+		server.Start(cfg.Server.Addr)
 	}()
 
 	quit := make(chan os.Signal, 1)

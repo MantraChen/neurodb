@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"neurodb/pkg/common"
+	"neurodb/pkg/config"
 	"neurodb/pkg/core/learned"
 	"neurodb/pkg/core/memory"
 	"neurodb/pkg/core/structure"
@@ -27,35 +28,39 @@ type Shard struct {
 	compactionLock sync.Mutex
 }
 
-func NewShard(id int) *Shard {
+func NewShard(id int, bloomSize uint, bloomP float64) *Shard {
 	return &Shard{
 		id:             id,
 		mutableMem:     memory.NewMemTable(32),
 		learnedIndexes: make([]*learned.LearnedIndex, 0),
-		bloom:          structure.NewBloomFilter(10000, 0.01),
+		bloom:          structure.NewBloomFilter(bloomSize, bloomP),
 	}
 }
 
 type HybridStore struct {
-	shards  [ShardCount]*Shard
+	shards  []*Shard
 	backend storage.Backend
 	stats   *monitor.WorkloadStats
 
 	writeCh chan common.Record
 	closeCh chan struct{}
 	wg      sync.WaitGroup
+
+	conf *config.Config
 }
 
-func NewHybridStore(dbPath string) *HybridStore {
+func NewHybridStore(cfg *config.Config) *HybridStore {
 	hs := &HybridStore{
-		backend: storage.NewDiskBackend(dbPath),
+		backend: storage.NewDiskBackend(cfg.Storage.Path),
 		stats:   monitor.NewWorkloadStats(),
-		writeCh: make(chan common.Record, 5000),
+		writeCh: make(chan common.Record, cfg.Storage.WalBufferSize),
 		closeCh: make(chan struct{}),
+		shards:  make([]*Shard, cfg.System.ShardCount),
+		conf:    cfg,
 	}
 
-	for i := 0; i < ShardCount; i++ {
-		hs.shards[i] = NewShard(i)
+	for i := 0; i < cfg.System.ShardCount; i++ {
+		hs.shards[i] = NewShard(i, cfg.System.BloomSize, cfg.System.BloomFalseProb)
 	}
 
 	hs.recoverFromDisk()
@@ -67,7 +72,7 @@ func NewHybridStore(dbPath string) *HybridStore {
 }
 
 func (hs *HybridStore) getShard(key common.KeyType) *Shard {
-	return hs.shards[int(key)%ShardCount]
+	return hs.shards[int(key)%hs.conf.System.ShardCount]
 }
 
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
@@ -76,7 +81,6 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	hs.writeCh <- common.Record{Key: key, Value: val}
 
 	shard := hs.getShard(key)
-
 	shard.mutex.Lock()
 	defer shard.mutex.Unlock()
 
@@ -229,22 +233,22 @@ func (hs *HybridStore) backgroundPersist() {
 }
 
 func (hs *HybridStore) recoverFromDisk() {
-	log.Println("[NeuroDB] Recovering from SQLite...")
+	log.Println("[NeuroDB] Recovering from WAL...")
 	records, err := hs.backend.LoadAll()
 	if err != nil {
 		log.Printf("[Error] Recovery failed: %v", err)
 		return
 	}
 
-	shardData := make([][]common.Record, ShardCount)
+	shardData := make([][]common.Record, hs.conf.System.ShardCount)
 	for _, r := range records {
-		idx := int(r.Key) % ShardCount
+		idx := int(r.Key) % hs.conf.System.ShardCount
 		shardData[idx] = append(shardData[idx], r)
 		hs.shards[idx].bloom.Add(r.Key)
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < ShardCount; i++ {
+	for i := 0; i < hs.conf.System.ShardCount; i++ {
 		if len(shardData[i]) == 0 {
 			continue
 		}
@@ -257,27 +261,21 @@ func (hs *HybridStore) recoverFromDisk() {
 	}
 	wg.Wait()
 
-	log.Printf("[NeuroDB] Recovery done. Distributed %d records across %d shards.", len(records), ShardCount)
+	log.Printf("[NeuroDB] Recovery done. Distributed %d records across %d shards.", len(records), hs.conf.System.ShardCount)
 }
 
 func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 	var results []common.Record
-
 	for _, shard := range hs.shards {
 		shard.mutex.RLock()
-
-		// Scan MemTable
 		memItems := shard.mutableMem.Scan(start, end)
 		for _, item := range memItems {
 			results = append(results, common.Record{Key: item.Key, Value: item.Val})
 		}
-
-		// Scan Indexes
 		for _, li := range shard.learnedIndexes {
 			res := li.Scan(start, end)
 			results = append(results, res...)
 		}
-
 		shard.mutex.RUnlock()
 	}
 	return results
@@ -318,7 +316,7 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 	return map[string]interface{}{
 		"memtable_record_count": totalMem,
 		"learned_indexes_count": totalIndex,
-		"shards_active":         ShardCount,
+		"shards_active":         hs.conf.System.ShardCount,
 		"pending_writes":        len(hs.writeCh),
 		"rw_ratio":              hs.stats.GetReadWriteRatio(),
 		"mode": func() string {
@@ -348,11 +346,11 @@ func (hs *HybridStore) Reset() error {
 		return err
 	}
 
-	for i := 0; i < ShardCount; i++ {
+	for i := 0; i < hs.conf.System.ShardCount; i++ {
 		hs.shards[i].mutex.Lock()
 		hs.shards[i].mutableMem = memory.NewMemTable(32)
 		hs.shards[i].learnedIndexes = make([]*learned.LearnedIndex, 0)
-		hs.shards[i].bloom = structure.NewBloomFilter(10000, 0.01)
+		hs.shards[i].bloom = structure.NewBloomFilter(hs.conf.System.BloomSize, hs.conf.System.BloomFalseProb)
 		hs.shards[i].mutex.Unlock()
 	}
 	hs.stats = monitor.NewWorkloadStats()
