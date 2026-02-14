@@ -14,6 +14,7 @@ type SSTable struct {
 	fileSize     int64
 	indexKeys    []common.KeyType
 	indexOffsets []int64
+	Filename     string
 }
 
 func Open(filename string) (*SSTable, error) {
@@ -71,6 +72,7 @@ func Open(filename string) (*SSTable, error) {
 		fileSize:     size,
 		indexKeys:    keys,
 		indexOffsets: offsets,
+		Filename:     filename,
 	}, nil
 }
 
@@ -85,16 +87,11 @@ func (t *SSTable) Get(key common.KeyType) (common.ValueType, bool) {
 	}
 
 	offset := t.indexOffsets[startIdx]
-
 	if _, err := t.file.Seek(offset, 0); err != nil {
 		return nil, false
 	}
 
 	for {
-		currentPos, _ := t.file.Seek(0, 1)
-		if currentPos >= t.fileSize-16 {
-			break
-		}
 
 		var k int64
 		if err := binary.Read(t.file, binary.LittleEndian, &k); err != nil {
@@ -119,10 +116,70 @@ func (t *SSTable) Get(key common.KeyType) (common.ValueType, bool) {
 			return nil, false
 		}
 	}
-
 	return nil, false
 }
 
 func (t *SSTable) Close() {
 	t.file.Close()
 }
+
+type Iterator struct {
+	file     *os.File
+	fileSize int64
+
+	currentKey common.KeyType
+	currentVal common.ValueType
+	err        error
+	valid      bool
+}
+
+func (t *SSTable) NewIterator() *Iterator {
+	f, err := os.Open(t.Filename)
+	return &Iterator{
+		file:     f,
+		fileSize: t.fileSize,
+		err:      err,
+		valid:    err == nil,
+	}
+}
+
+func (it *Iterator) Next() bool {
+	if !it.valid {
+		return false
+	}
+
+	var k int64
+	if err := binary.Read(it.file, binary.LittleEndian, &k); err != nil {
+		it.valid = false
+		if err != io.EOF {
+			it.err = err
+		}
+		return false
+	}
+
+	var valLen int32
+	if err := binary.Read(it.file, binary.LittleEndian, &valLen); err != nil {
+		it.valid = false
+		return false
+	}
+
+	if valLen < 0 || valLen > 1024*1024*10 {
+		it.valid = false
+		return false
+	}
+
+	val := make([]byte, valLen)
+	if _, err := io.ReadFull(it.file, val); err != nil {
+		it.valid = false
+		return false
+	}
+
+	it.currentKey = common.KeyType(k)
+	it.currentVal = val
+	return true
+}
+
+func (it *Iterator) Key() common.KeyType     { return it.currentKey }
+func (it *Iterator) Value() common.ValueType { return it.currentVal }
+func (it *Iterator) Valid() bool             { return it.valid }
+func (it *Iterator) Close()                  { it.file.Close() }

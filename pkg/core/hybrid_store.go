@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"log"
+	"math"
 	"neurodb/pkg/common"
 	"neurodb/pkg/config"
 	"neurodb/pkg/core/learned"
@@ -43,21 +44,18 @@ type HybridStore struct {
 	shards  []*Shard
 	backend storage.Backend
 	stats   *monitor.WorkloadStats
-
 	writeCh chan common.Record
 	closeCh chan struct{}
 	wg      sync.WaitGroup
-
-	conf *config.Config
+	conf    *config.Config
 }
 
 func NewHybridStore(cfg *config.Config) *HybridStore {
 	if err := os.MkdirAll(cfg.Storage.Path, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+		log.Fatalf("Failed to create data dir: %v", err)
 	}
 
 	walPath := filepath.Join(cfg.Storage.Path, "neuro.db")
-
 	hs := &HybridStore{
 		backend: storage.NewDiskBackend(walPath),
 		stats:   monitor.NewWorkloadStats(),
@@ -72,7 +70,6 @@ func NewHybridStore(cfg *config.Config) *HybridStore {
 	}
 
 	hs.restoreSSTables()
-
 	hs.recoverFromWAL()
 
 	hs.wg.Add(1)
@@ -87,7 +84,6 @@ func (hs *HybridStore) getShard(key common.KeyType) *Shard {
 
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	hs.stats.RecordWrite()
-
 	hs.writeCh <- common.Record{Key: key, Value: val}
 
 	shard := hs.getShard(key)
@@ -105,40 +101,34 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 	hs.stats.RecordRead()
 	shard := hs.getShard(key)
-
 	shard.mutex.RLock()
 
 	if !shard.bloom.Contains(key) {
 		shard.mutex.RUnlock()
 		return nil, false
 	}
-
 	if val, ok := shard.mutableMem.Get(key); ok {
 		shard.mutex.RUnlock()
 		hs.stats.RecordHit()
 		return val, true
 	}
-
 	for i := len(shard.learnedIndexes) - 1; i >= 0; i-- {
 		if val, ok := shard.learnedIndexes[i].Get(key); ok {
 			shard.mutex.RUnlock()
 			return val, true
 		}
 	}
-
 	for i := len(shard.sstables) - 1; i >= 0; i-- {
 		if val, ok := shard.sstables[i].Get(key); ok {
 			shard.mutex.RUnlock()
 			return val, true
 		}
 	}
-
 	shard.mutex.RUnlock()
 
 	if val, found := hs.backend.Read(key); found {
 		return val, true
 	}
-
 	return nil, false
 }
 
@@ -156,7 +146,6 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 
 	fileName := fmt.Sprintf("shard-%d-%d.sst", shard.id, time.Now().UnixNano())
 	fullPath := filepath.Join(hs.conf.Storage.Path, fileName)
-
 	builder, err := sstable.NewBuilder(fullPath)
 	if err == nil {
 		for _, r := range data {
@@ -169,134 +158,103 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 			shard.sstables = append(shard.sstables, sst)
 		}
 	} else {
-		log.Printf("[Error] Failed to create SSTable: %v", err)
+		log.Printf("[Error] Flush failed: %v", err)
+	}
+
+	if len(shard.sstables) >= 4 {
+		go hs.compactShard(shard)
 	}
 
 	ratio := hs.stats.GetReadWriteRatio()
-	shouldTrainModel := ratio > 0.0001
-	canFineTune := shouldTrainModel && len(shard.learnedIndexes) > 0 && count < 10000
-
-	if canFineTune {
-		lastIndex := shard.learnedIndexes[len(shard.learnedIndexes)-1]
-		lastIndex.Append(data)
+	if ratio > 0.0001 && len(shard.learnedIndexes) > 0 && count < 10000 {
+		shard.learnedIndexes[len(shard.learnedIndexes)-1].Append(data)
 	} else {
 		li := learned.Build(data)
 		shard.learnedIndexes = append(shard.learnedIndexes, li)
-
-		if len(shard.learnedIndexes) >= 4 {
-			hs.triggerShardCompaction(shard)
-		}
 	}
 
 	shard.mutableMem = memory.NewMemTable(32)
 }
 
-func (hs *HybridStore) restoreSSTables() {
-	log.Println("[NeuroDB] Scanning for SSTables...")
-
-	pattern := filepath.Join(hs.conf.Storage.Path, "*.sst")
-	files, err := filepath.Glob(pattern)
-	if err != nil {
-		log.Printf("[Warning] Failed to glob SSTables: %v", err)
-		return
-	}
-
-	count := 0
-	for _, file := range files {
-		baseName := filepath.Base(file)
-		parts := strings.Split(baseName, "-")
-		if len(parts) < 3 {
-			continue
-		}
-
-		shardID, err := strconv.Atoi(parts[1])
-		if err != nil || shardID < 0 || shardID >= len(hs.shards) {
-			continue
-		}
-
-		sst, err := sstable.Open(file)
-		if err != nil {
-			log.Printf("[Error] Failed to open SSTable %s: %v", baseName, err)
-			continue
-		}
-
-		hs.shards[shardID].mutex.Lock()
-		hs.shards[shardID].sstables = append(hs.shards[shardID].sstables, sst)
-		hs.shards[shardID].mutex.Unlock()
-		count++
-	}
-
-	log.Printf("[NeuroDB] Restored %d SSTables from disk.", count)
-}
-
-func (hs *HybridStore) recoverFromWAL() {
-	log.Println("[NeuroDB] Replaying WAL...")
-	records, err := hs.backend.LoadAll()
-	if err != nil {
-		log.Printf("[Error] Recovery failed: %v", err)
-		return
-	}
-
-	shardData := make([][]common.Record, hs.conf.System.ShardCount)
-	for _, r := range records {
-		idx := int(r.Key) % hs.conf.System.ShardCount
-		shardData[idx] = append(shardData[idx], r)
-		hs.shards[idx].bloom.Add(r.Key)
-	}
-
-	var wg sync.WaitGroup
-	for i := 0; i < hs.conf.System.ShardCount; i++ {
-		if len(shardData[i]) == 0 {
-			continue
-		}
-		wg.Add(1)
-		go func(idx int, data []common.Record) {
-			defer wg.Done()
-			li := learned.Build(data)
-			hs.shards[idx].learnedIndexes = append(hs.shards[idx].learnedIndexes, li)
-		}(i, shardData[i])
-	}
-	wg.Wait()
-
-	log.Printf("[NeuroDB] WAL Replay done. Processed %d records.", len(records))
-}
-
-func (hs *HybridStore) triggerShardCompaction(shard *Shard) {
+func (hs *HybridStore) compactShard(shard *Shard) {
 	if !shard.compactionLock.TryLock() {
 		return
 	}
-	go func() {
-		defer shard.compactionLock.Unlock()
-		shard.mutex.RLock()
-		totalLen := len(shard.learnedIndexes)
-		if totalLen < 2 {
-			shard.mutex.RUnlock()
-			return
-		}
-		mergeCount := totalLen - 1
-		indexesToMerge := shard.learnedIndexes[:mergeCount]
-		var totalRecords []common.Record
-		for _, idx := range indexesToMerge {
-			totalRecords = append(totalRecords, idx.GetAllRecords()...)
-		}
-		shard.mutex.RUnlock()
+	defer shard.compactionLock.Unlock()
 
-		if len(totalRecords) == 0 {
-			return
-		}
-		bigIndex := learned.Build(totalRecords)
+	shard.mutex.RLock()
+	inputTables := make([]*sstable.SSTable, len(shard.sstables))
+	copy(inputTables, shard.sstables)
+	shard.mutex.RUnlock()
 
-		shard.mutex.Lock()
-		defer shard.mutex.Unlock()
-		if len(shard.learnedIndexes) < mergeCount {
-			return
+	if len(inputTables) < 4 {
+		return
+	}
+
+	var iters []*sstable.Iterator
+	for _, t := range inputTables {
+		iter := t.NewIterator()
+		if iter.Next() {
+			iters = append(iters, iter)
+		} else {
+			iter.Close() // 空文件
 		}
-		remaining := shard.learnedIndexes[mergeCount:]
-		newIndexes := []*learned.LearnedIndex{bigIndex}
-		newIndexes = append(newIndexes, remaining...)
-		shard.learnedIndexes = newIndexes
-		log.Printf("[Shard-%d] Compacted %d segments into 1.", shard.id, mergeCount)
-	}()
+	}
+
+	outFileName := fmt.Sprintf("shard-%d-%d-compacted.sst", shard.id, time.Now().UnixNano())
+	outPath := filepath.Join(hs.conf.Storage.Path, outFileName)
+	builder, err := sstable.NewBuilder(outPath)
+	if err != nil {
+		log.Printf("[Compaction] Failed to create output: %v", err)
+		return
+	}
+
+	for len(iters) > 0 {
+		minKey := common.KeyType(math.MaxInt64)
+		bestIterIdx := -1
+
+		for i, it := range iters {
+			k := it.Key()
+			if k < minKey {
+				minKey = k
+				bestIterIdx = i
+			} else if k == minKey {
+				bestIterIdx = i
+			}
+		}
+
+		winner := iters[bestIterIdx]
+		builder.Add(winner.Key(), winner.Value())
+
+		if !winner.Next() {
+			winner.Close()
+			iters = append(iters[:bestIterIdx], iters[bestIterIdx+1:]...)
+		}
+
+	}
+
+	builder.Close()
+
+	newSST, err := sstable.Open(outPath)
+	if err != nil {
+		return
+	}
+
+	shard.mutex.Lock()
+
+	newlyFlushed := shard.sstables[len(inputTables):]
+
+	finalList := []*sstable.SSTable{newSST}
+	finalList = append(finalList, newlyFlushed...)
+
+	shard.sstables = finalList
+	shard.mutex.Unlock()
+
+	log.Printf("[Compaction] Shard %d: Merged %d -> 1 files. Disk cleaned.", shard.id, len(inputTables))
+	for _, old := range inputTables {
+		old.Close()             // 关闭文件句柄
+		os.Remove(old.Filename) // 删除磁盘文件
+	}
 }
 
 func (hs *HybridStore) backgroundPersist() {
@@ -329,6 +287,61 @@ func (hs *HybridStore) backgroundPersist() {
 			return
 		}
 	}
+}
+
+func (hs *HybridStore) restoreSSTables() {
+	log.Println("[NeuroDB] Scanning for SSTables...")
+	pattern := filepath.Join(hs.conf.Storage.Path, "*.sst")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return
+	}
+
+	count := 0
+	for _, file := range files {
+		baseName := filepath.Base(file)
+		parts := strings.Split(baseName, "-")
+		if len(parts) < 3 {
+			continue
+		}
+		shardID, _ := strconv.Atoi(parts[1])
+
+		sst, err := sstable.Open(file)
+		if err == nil {
+			hs.shards[shardID].sstables = append(hs.shards[shardID].sstables, sst)
+			count++
+		}
+	}
+	log.Printf("[NeuroDB] Restored %d SSTables from disk.", count)
+}
+
+func (hs *HybridStore) recoverFromWAL() {
+	log.Println("[NeuroDB] Replaying WAL...")
+	records, err := hs.backend.LoadAll()
+	if err != nil {
+		return
+	}
+
+	shardData := make([][]common.Record, hs.conf.System.ShardCount)
+	for _, r := range records {
+		idx := int(r.Key) % hs.conf.System.ShardCount
+		shardData[idx] = append(shardData[idx], r)
+		hs.shards[idx].bloom.Add(r.Key)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < hs.conf.System.ShardCount; i++ {
+		if len(shardData[i]) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(idx int, data []common.Record) {
+			defer wg.Done()
+			li := learned.Build(data)
+			hs.shards[idx].learnedIndexes = append(hs.shards[idx].learnedIndexes, li)
+		}(i, shardData[i])
+	}
+	wg.Wait()
 }
 
 func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
@@ -375,20 +388,6 @@ func (hs *HybridStore) Close() {
 	}
 }
 
-func (hs *HybridStore) DebugPrint() {
-	totalMem := 0
-	totalIndex := 0
-	totalSST := 0
-	for _, s := range hs.shards {
-		s.mutex.RLock()
-		totalMem += s.mutableMem.Count()
-		totalIndex += len(s.learnedIndexes)
-		totalSST += len(s.sstables)
-		s.mutex.RUnlock()
-	}
-	log.Printf("Store Status: MemTable: %d, Learned Layers: %d, SSTables: %d", totalMem, totalIndex, totalSST)
-}
-
 func (hs *HybridStore) Stats() map[string]interface{} {
 	totalMem := 0
 	totalIndex := 0
@@ -407,46 +406,20 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 		"shards_active":         hs.conf.System.ShardCount,
 		"pending_writes":        len(hs.writeCh),
 		"rw_ratio":              hs.stats.GetReadWriteRatio(),
-		"mode": func() string {
-			if hs.stats.GetReadWriteRatio() > 0.01 {
-				return "Read-Intensive (AI Mode)"
-			}
-			return "Write-Intensive (Fast Mode)"
-		}(),
+		"mode":                  "Hybrid (LSM-Tree + AI)",
 	}
 }
 
 func (hs *HybridStore) ExportModelData() ([]learned.DiagnosticPoint, error) {
-	for _, s := range hs.shards {
-		s.mutex.RLock()
-		if len(s.learnedIndexes) > 0 {
-			res := s.learnedIndexes[len(s.learnedIndexes)-1].ExportDiagnostics()
-			s.mutex.RUnlock()
-			return res, nil
-		}
-		s.mutex.RUnlock()
-	}
-	return nil, fmt.Errorf("no data model available")
+	return nil, nil
 }
 
 func (hs *HybridStore) Reset() error {
-	if err := hs.backend.Truncate(); err != nil {
-		return err
-	}
+	hs.backend.Truncate()
 	files, _ := filepath.Glob(filepath.Join(hs.conf.Storage.Path, "*.sst"))
 	for _, f := range files {
 		os.Remove(f)
 	}
-
-	for i := 0; i < hs.conf.System.ShardCount; i++ {
-		hs.shards[i].mutex.Lock()
-		hs.shards[i].mutableMem = memory.NewMemTable(32)
-		hs.shards[i].learnedIndexes = make([]*learned.LearnedIndex, 0)
-		hs.shards[i].sstables = make([]*sstable.SSTable, 0)
-		hs.shards[i].bloom = structure.NewBloomFilter(hs.conf.System.BloomSize, hs.conf.System.BloomFalseProb)
-		hs.shards[i].mutex.Unlock()
-	}
-	hs.stats = monitor.NewWorkloadStats()
 	return nil
 }
 
@@ -454,7 +427,7 @@ func (hs *HybridStore) BenchmarkAlgo(iterations int) (float64, float64, error) {
 	hs.shards[0].mutex.RLock()
 	defer hs.shards[0].mutex.RUnlock()
 	if len(hs.shards[0].learnedIndexes) == 0 {
-		return 0, 0, fmt.Errorf("shard 0 has no data for benchmark")
+		return 0, 0, fmt.Errorf("no data")
 	}
 	return hs.shards[0].learnedIndexes[0].BenchmarkInternal(iterations)
 }
