@@ -89,8 +89,8 @@ system:
   shard_count: 16    # Concurrency shards
   bloom_size: 200000 # Bloom filter capacity per shard
 ```
----
-##API Reference (Go SDK)
+
+## API Reference (Go SDK)
 ```Go
 import "neurodb/pkg/client"
 
@@ -116,7 +116,7 @@ func main() {
 }
 ```
 
-##Architecture
+## Architecture
 ```Plaintext
 [ Client Application ]
        |
@@ -138,7 +138,7 @@ func main() {
 [ Merged SSTable (Level 1) ]
 ```
 
-##Project Structure
+## Project Structure
 ```Plaintext
 ├── cmd/
 │   ├── server/      # Database Kernel Entry
