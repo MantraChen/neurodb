@@ -23,6 +23,7 @@ func main() {
 	cli, err := client.Dial(*serverAddr)
 	if err != nil {
 		fmt.Printf("Connection failed: %v\n", err)
+		fmt.Println("Tip: Ensure the server is running (e.g. go run cmd/server/main.go).")
 		return
 	}
 	defer cli.Close()

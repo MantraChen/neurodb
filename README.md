@@ -37,8 +37,11 @@
 The server listens on **HTTP (:8080)** for the dashboard and **TCP (:9090)** for the binary protocol.
 
 ```bash
-# Start with default config
+# Start with default config (tries configs/neuro.yaml, then neuro.yaml)
 go run cmd/server/main.go
+
+# Or specify config path
+go run cmd/server/main.go -config ./my.yaml
 ```
 
 ## 2. Use the CLI Tool
@@ -65,9 +68,10 @@ Found 5 records:
 ```
 
 ## 3. Run Benchmarks
-Compare TCP vs HTTP performance across Write, Read, and Scan workloads.
+Compare TCP vs HTTP performance.
 ```bash
 go run cmd/benchmark/main.go
+# Options: -http http://localhost:8080 -tcp localhost:9090 -n 5000
 ```
 
 ## 4.Visual Dashboard
@@ -76,7 +80,9 @@ Open your browser and navigate to: http://localhost:8080
 * **AI Diagnostics**: Real-time Error Heatmap of the Learned Index model.
 * **Control Panel**: Trigger manual ingestion, compaction, or system reset.
 ## Configuration
-The server loads `configs/neuro.yaml` from the project root. If the file is missing, defaults are used. To customize, copy `configs/config.example.yaml` to `configs/neuro.yaml` and edit.
+The server looks for `configs/neuro.yaml` or `neuro.yaml`; use `-config` to override. If no file is found, defaults are used. To customize, copy `configs/config.example.yaml` to `configs/neuro.yaml` and edit.
+
+**Health check**: `GET /api/health` returns `{"status":"ok"}` (for load balancers / k8s).
 
 ```yaml
 server:

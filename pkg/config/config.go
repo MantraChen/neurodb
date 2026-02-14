@@ -45,6 +45,19 @@ func Load(configPath string) (*Config, error) {
 		},
 	}
 
+	if configPath == "" {
+		for _, p := range []string{"configs/neuro.yaml", "neuro.yaml"} {
+			data, err := os.ReadFile(p)
+			if err == nil {
+				if err := yaml.Unmarshal(data, cfg); err != nil {
+					return cfg, err
+				}
+				return cfg, nil
+			}
+		}
+		return cfg, nil // no file found: use defaults
+	}
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return cfg, err
