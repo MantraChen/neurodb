@@ -176,6 +176,15 @@
         .bench-val { width: 70px; text-align: right; font-family: var(--font-mono); }
 
         #heatCanvas { width: 100%; height: 200px; background: #010409; border: 1px solid var(--border); border-radius: 4px; margin-top: 10px; }
+
+        /* Scan Results Table */
+        .scan-results { max-height: 180px; overflow-y: auto; margin-top: 8px; font-size: 11px; }
+        .scan-results table { width: 100%; border-collapse: collapse; }
+        .scan-results th, .scan-results td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+        .scan-results th { color: var(--text-secondary); font-weight: 600; }
+        .scan-results .empty { color: var(--text-tertiary); padding: 12px; text-align: center; }
+        .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 6px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         
         /* Scrollbar polish */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -187,7 +196,7 @@
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge badge-live">v2.7 SSTable</span></h1>
+        <h1>NeuroDB <span class="badge badge-live">v2.8</span></h1>
         <div class="status-indicator">
             <div class="dot"></div>
             <span>Engine: Sharded + LSM-Tree</span>
@@ -242,7 +251,7 @@
                     <button class="btn-danger" onclick="doDel()">Delete</button>
                 </div>
                 <div style="height: 8px;"></div>
-                <button class="btn-block" onclick="triggerIngest()">Batch Ingest (100k)</button>
+                <button class="btn-block" onclick="triggerIngest()" id="btnIngest">Batch Ingest (100k)</button>
             </div>
 
             <div class="panel">
@@ -267,8 +276,17 @@
                 <div class="form-row group-input">
                     <input type="number" id="scanStart" placeholder="Start Key">
                     <input type="number" id="scanEnd" placeholder="End Key">
-                    <button onclick="doScan()">Scan</button>
+                    <button onclick="doScan()" id="btnScan">Scan</button>
                 </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-title">SQL Query</div>
+                <div class="form-row group-input">
+                    <input type="text" id="sqlQuery" placeholder="SELECT * FROM users" style="flex:1;">
+                    <button onclick="doSQL()" id="btnSQL">Execute</button>
+                </div>
+                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Supported: SELECT * FROM &lt;table&gt;</div>
             </div>
 
             <div class="panel">
@@ -301,6 +319,13 @@
             </div>
 
             <div class="panel">
+                <div class="panel-title">Scan Results</div>
+                <div class="scan-results" id="scanResults">
+                    <div class="empty">Run a range scan or SQL query to see results</div>
+                </div>
+            </div>
+
+            <div class="panel">
                 <div class="panel-title">
                     Learned Index Error Heatmap
                     <button onclick="loadHeatmap()" style="font-size: 10px; padding: 2px 8px; margin: 0; width: auto;">Refresh</button>
@@ -312,7 +337,7 @@
             </div>
 
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB v2.7 Ready. SSTable Engine Active.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB v2.8 Ready. LSM-Tree + Learned Index Active.</span></div>
             </div>
         </div>
     </div>
@@ -395,11 +420,25 @@
 
         async function triggerIngest() {
             if(!confirm("Initiate batch ingestion (100k records)?")) return;
+            const btn = document.getElementById('btnIngest');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Starting...';
             log("Starting high-throughput ingestion...", 'sys');
             try {
                 await fetch('/api/ingest', { method:'POST'});
-                setTimeout(() => log("Ingestion started. Watch 'Ingest Progress'.", 'sys'), 500);
-            } catch(e) { log(e, 'err'); }
+                log("Ingestion started. Watch 'Ingest Progress'.", 'sys');
+                const check = setInterval(() => {
+                    fetch('/api/ingest/status').then(r=>r.json()).then(d=>{
+                        if(d.ingested >= 100000) {
+                            clearInterval(check);
+                            btn.disabled = false;
+                            btn.innerText = 'Batch Ingest (100k)';
+                        } else {
+                            btn.innerHTML = '<span class="spinner"></span>Ingesting... ' + d.ingested.toLocaleString();
+                        }
+                    });
+                }, 500);
+            } catch(e) { log(e, 'err'); btn.disabled = false; btn.innerText = 'Batch Ingest (100k)'; }
         }
 
         async function doMoCap() {
@@ -433,19 +472,67 @@
             const e = document.getElementById('scanEnd').value;
             if(!s || !e) return;
             
+            const btn = document.getElementById('btnScan');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Scanning';
             log(`Scanning range [${s}, ${e}]...`, 'sys');
             try {
                 const res = await fetch(`/api/scan?start=${s}&end=${e}`);
                 const d = await res.json();
+                renderScanResults(d.data || [], d.count, `Range [${s}, ${e}]`);
                 log(`Scan Result: Found ${d.count} records.`, 'ok');
-            } catch(e) { log(e, 'err'); }
+            } catch(err) { log(err, 'err'); }
+            finally { btn.disabled = false; btn.innerText = 'Scan'; }
+        }
+
+        function renderScanResults(data, count, title) {
+            const el = document.getElementById('scanResults');
+            if(!data || data.length === 0) {
+                el.innerHTML = `<div class="empty">${title}: 0 records</div>`;
+                return;
+            }
+            let html = `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>`;
+            const maxShow = 50;
+            for(let i = 0; i < Math.min(data.length, maxShow); i++) {
+                const r = data[i];
+                const val = (r.value ?? r.Value ?? '').toString();
+                const displayVal = val.length > 40 ? val.slice(0,37) + '...' : val;
+                const k = r.key ?? r.Key ?? '';
+                html += `<tr><td>${k}</td><td title="${escapeHtml(val)}">${escapeHtml(displayVal)}</td></tr>`;
+            }
+            html += '</tbody></table>';
+            if(data.length > maxShow) html += `<div class="empty">... and ${data.length - maxShow} more</div>`;
+            el.innerHTML = html;
+        }
+        function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+        async function doSQL() {
+            const q = (document.getElementById('sqlQuery').value || 'SELECT * FROM users').trim();
+            if(!q) return;
+            
+            const btn = document.getElementById('btnSQL');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Executing';
+            log(`SQL: ${q}`, 'sys');
+            try {
+                const res = await fetch('/api/sql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:q})});
+                const d = await res.json();
+                if(d.error) {
+                    log(`SQL Error: ${d.error}`, 'err');
+                } else {
+                    const rows = (d.rows || []).map(r => ({key: r.id, value: r.data}));
+                    renderScanResults(rows, d.count, `FROM ${d.table}`);
+                    log(`SQL Result: ${d.count} rows from ${d.table}`, 'ok');
+                }
+            } catch(err) { log(err, 'err'); }
+            finally { btn.disabled = false; btn.innerText = 'Execute'; }
         }
 
         // --- Visualization & Benchmarks ---
         async function runBenchmark() {
             const btn = document.getElementById('btnBench');
             const originalText = btn.innerText;
-            btn.innerText = "Running Test..."; btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span>Running Test...'; btn.disabled = true;
             try {
                 const res = await fetch('/api/benchmark');
                 const d = await res.json();
@@ -463,7 +550,7 @@
                 
                 log(`Benchmark: ${d.speedup} speedup achieved.`, 'sys');
             } catch(e) { log(e, 'err'); }
-            finally { btn.innerText = originalText; btn.disabled = false; }
+            finally { btn.innerHTML = originalText; btn.disabled = false; }
         }
 
         // [核心优化] 动态自适应热力图

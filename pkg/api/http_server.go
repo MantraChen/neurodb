@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"neurodb/pkg/common"
 	"neurodb/pkg/core"
+	"neurodb/pkg/sql"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -61,9 +64,11 @@ func (s *Server) RegisterRoutes() {
 	http.HandleFunc("/api/mocap/put", recoverMiddleware(s.handleMoCapPut))
 	http.HandleFunc("/api/scan", recoverMiddleware(s.handleScan))
 	http.HandleFunc("/api/heatmap", recoverMiddleware(s.handleHeatmap))
+	http.HandleFunc("/api/sql", recoverMiddleware(s.handleSQL))
 
+	staticDir := resolveStaticDir()
 	http.Handle("/", recoverMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		http.FileServer(http.Dir("./static")).ServeHTTP(w, r)
+		http.FileServer(http.Dir(staticDir)).ServeHTTP(w, r)
 	}))
 }
 
@@ -307,4 +312,52 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleSQL(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Query string `json:"query"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "invalid body"})
+		return
+	}
+	stmt, err := sql.Parse(req.Query)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+		return
+	}
+	start, end := stmt.TableKeyRange()
+	records := s.store.Scan(common.KeyType(start), common.KeyType(end))
+	rows := make([]map[string]interface{}, 0, len(records))
+	for _, rec := range records {
+		rows = append(rows, map[string]interface{}{
+			"id":   rec.Key,
+			"data": string(rec.Value),
+		})
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"table": stmt.Table,
+		"count": len(rows),
+		"rows":  rows,
+	})
+}
+
+func resolveStaticDir() string {
+	dirs := []string{"./static", "static"}
+	if exe, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Join(filepath.Dir(exe), "static"))
+	}
+	for _, d := range dirs {
+		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
+			return d
+		}
+	}
+	return "./static"
 }

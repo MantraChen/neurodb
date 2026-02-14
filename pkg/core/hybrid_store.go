@@ -94,7 +94,7 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	shard.bloom.Add(key)
 	shard.mutableMem.Put(key, val)
 
-	if shard.mutableMem.Count() >= 2000 {
+	if shard.mutableMem.Count() >= hs.conf.Storage.MemTableFlushThreshold {
 		hs.adaptiveFlush(shard)
 	}
 }
@@ -174,7 +174,7 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 		log.Printf("[Error] Failed to create SSTable: %v", err)
 	}
 
-	if len(shard.sstables) >= 4 {
+	if len(shard.sstables) >= hs.conf.Storage.CompactionThreshold {
 		go hs.compactShard(shard)
 	}
 
@@ -192,7 +192,7 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 	copy(inputTables, shard.sstables)
 	shard.mutex.RUnlock()
 
-	if len(inputTables) < 4 {
+	if len(inputTables) < hs.conf.Storage.CompactionThreshold {
 		return
 	}
 
@@ -285,7 +285,11 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 
 func (hs *HybridStore) backgroundPersist() {
 	defer hs.wg.Done()
-	buffer := make([]common.Record, 0, 500)
+	batchSize := hs.conf.Storage.WalBatchSize
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	buffer := make([]common.Record, 0, batchSize)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -303,7 +307,7 @@ func (hs *HybridStore) backgroundPersist() {
 		select {
 		case rec := <-hs.writeCh:
 			buffer = append(buffer, rec)
-			if len(buffer) >= 500 {
+			if len(buffer) >= batchSize {
 				flush()
 			}
 		case <-ticker.C:
