@@ -90,7 +90,7 @@ Open your browser and navigate to: **http://localhost:8080**
 │   ├── monitor/         # Workload Statistics
 │   └── storage/         # SQLite Persistence Layer
 └── static/              # Web Console (HTML/JS/CSS)
-
+```
 ## API Reference
 
 | Method | Endpoint | Description |
