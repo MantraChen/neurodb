@@ -99,6 +99,10 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	}
 }
 
+func (hs *HybridStore) Delete(key common.KeyType) {
+	hs.Put(key, []byte{})
+}
+
 func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 	hs.stats.RecordRead()
 	shard := hs.getShard(key)
@@ -108,17 +112,31 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 	if !shard.bloom.Contains(key) {
 		return nil, false
 	}
+
 	if val, ok := shard.mutableMem.Get(key); ok {
+		if len(val) == 0 {
+			return nil, false
+		}
 		hs.stats.RecordHit()
 		return val, true
 	}
+
+	// Check Learned Indexes (Recent Immutable)
 	for i := len(shard.learnedIndexes) - 1; i >= 0; i-- {
 		if val, ok := shard.learnedIndexes[i].Get(key); ok {
+			if len(val) == 0 {
+				return nil, false
+			}
 			return val, true
 		}
 	}
+
+	// Check SSTables (Disk Persistence)
 	for i := len(shard.sstables) - 1; i >= 0; i-- {
 		if val, ok := shard.sstables[i].Get(key); ok {
+			if len(val) == 0 {
+				return nil, false
+			}
 			return val, true
 		}
 	}
@@ -184,7 +202,7 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 		if iter.Next() {
 			iters = append(iters, iter)
 		} else {
-			iter.Close() // 空文件
+			iter.Close()
 		}
 	}
 
@@ -243,10 +261,10 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 	if err != nil {
 		return
 	}
+
 	shard.mutex.Lock()
 	currentLen := len(shard.sstables)
 	compactedCount := len(inputTables)
-
 	newlyFlushed := make([]*sstable.SSTable, 0)
 	if currentLen > compactedCount {
 		newlyFlushed = shard.sstables[compactedCount:]
@@ -259,7 +277,6 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 	shard.mutex.Unlock()
 
 	log.Printf("[Compaction] Shard %d: Merged %d -> 1 files. Disk cleaned.", shard.id, len(inputTables))
-
 	for _, old := range inputTables {
 		old.Close()
 		os.Remove(old.Filename)
@@ -361,6 +378,8 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 
 	for _, shard := range hs.shards {
 		shard.mutex.RLock()
+
+		//Scan SSTables (Disk)
 		for _, sst := range shard.sstables {
 			it := sst.NewIterator()
 			for it.Next() {
@@ -375,6 +394,7 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 			it.Close()
 		}
 
+		//Scan Learned Indexes
 		for _, li := range shard.learnedIndexes {
 			res := li.Scan(start, end)
 			for _, rec := range res {
@@ -382,6 +402,7 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 			}
 		}
 
+		//Scan MemTable
 		memItems := shard.mutableMem.Scan(start, end)
 		for _, item := range memItems {
 			mergedMap[item.Key] = item.Val
@@ -392,7 +413,10 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 
 	results := make([]common.Record, 0, len(mergedMap))
 	for k, v := range mergedMap {
-		results = append(results, common.Record{Key: k, Value: v})
+		// Filter Tombstones (empty values)
+		if len(v) > 0 {
+			results = append(results, common.Record{Key: k, Value: v})
+		}
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -490,6 +514,7 @@ func (hs *HybridStore) Reset() error {
 		for _, sst := range shard.sstables {
 			sst.Close()
 		}
+
 		shard.mutableMem = memory.NewMemTable(32)
 		shard.learnedIndexes = make([]*learned.LearnedIndex, 0)
 		shard.sstables = make([]*sstable.SSTable, 0)
@@ -504,7 +529,6 @@ Loop:
 	for {
 		select {
 		case <-hs.writeCh:
-			// discard
 		default:
 			break Loop
 		}
