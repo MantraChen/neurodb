@@ -58,10 +58,10 @@
         .status-indicator { display: flex; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--success); }
         .dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; margin-right: 6px; }
 
-        /* Metrics Grid */
+        /* Metrics Grid - Updated to 5 columns */
         .metrics {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr); /* Changed from 4 to 5 */
             gap: 12px;
             margin-bottom: 20px;
             flex-shrink: 0;
@@ -77,6 +77,9 @@
         .metric-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; }
         .metric-value { font-family: var(--font-mono); font-size: 20px; color: var(--text-primary); margin-top: 4px; }
         .metric-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+
+        /* Highlight for the Queue */
+        .val-queue { color: var(--warning); }
 
         /* Main Layout */
         .layout { display: flex; gap: 20px; flex: 1; min-height: 0; }
@@ -182,7 +185,7 @@
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge">v2.2 AI-Kernel</span></h1>
+        <h1>NeuroDB <span class="badge">v2.3 Async-Kernel</span></h1>
         <div class="status-indicator"><div class="dot"></div>System Online</div>
     </header>
 
@@ -193,7 +196,12 @@
             <div class="metric-sub">Optimizer Status</div>
         </div>
         <div class="metric-card">
-            <div class="metric-label">MemTable Entries</div>
+            <div class="metric-label">Async Queue</div>
+            <div class="metric-value val-queue" id="queueVal">0</div>
+            <div class="metric-sub">Pending Writes</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">MemTable</div>
             <div class="metric-value" id="memVal">0</div>
             <div class="metric-sub">Buffered Records</div>
         </div>
@@ -289,7 +297,7 @@
             </div>
 
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">Kernel initialized. Async compaction & Visualization enabled.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">Kernel initialized. Async I/O & Visualization enabled.</span></div>
             </div>
         </div>
     </div>
@@ -322,6 +330,15 @@
                 document.getElementById('modelVal').innerText = data.learned_indexes_count;
                 document.getElementById('rwVal').innerText = parseFloat(data.rw_ratio).toFixed(2);
                 
+                // [Update] 显示待写入队列长度
+                const queueSize = data.pending_writes || 0;
+                const qEl = document.getElementById('queueVal');
+                qEl.innerText = queueSize.toLocaleString();
+                // 简单的视觉告警
+                if (queueSize > 500) qEl.style.color = '#da3633'; // Red
+                else if (queueSize > 100) qEl.style.color = '#d29922'; // Yellow
+                else qEl.style.color = '#1f6feb'; // Blue/Normal
+
                 const modeEl = document.getElementById('modeVal');
                 if (data.mode && data.mode.includes("AI")) {
                     modeEl.innerText = "AI-Optimized";
@@ -341,7 +358,7 @@
             if(isNaN(k)) return;
             try {
                 await fetch('/api/put', { method:'POST', body: JSON.stringify({key:k, value:v})});
-                log(`Write: Key=${k}`, 'ok');
+                log(`Write: Key=${k} (Queued)`, 'ok');
                 document.getElementById('putKey').value = k+1;
             } catch(e) { log("Put failed: " + e, 'err'); }
         }
@@ -454,18 +471,15 @@
                 data.forEach(p => {
                     const x = ((p.k - minK) / rangeK) * W;
                     // Scale Error: Assume typical error range is within -50 to +50
-                    // H/2 is the zero line. 
                     let y = (H/2) - (p.e * 2); 
                     
-                    // Clamp to canvas
                     if(y < 0) y = 0;
                     if(y > H) y = H;
 
-                    // Color Coding
                     const errMag = Math.abs(p.e);
-                    if(errMag < 5) ctx.fillStyle = '#238636';      // Green (Excellent)
-                    else if(errMag < 20) ctx.fillStyle = '#d29922'; // Yellow (Acceptable)
-                    else ctx.fillStyle = '#da3633';                 // Red (Poor)
+                    if(errMag < 5) ctx.fillStyle = '#238636';      // Green
+                    else if(errMag < 20) ctx.fillStyle = '#d29922'; // Yellow
+                    else ctx.fillStyle = '#da3633';                 // Red
 
                     ctx.fillRect(x, y, 2, 2);
                 });
