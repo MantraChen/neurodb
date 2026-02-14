@@ -7,7 +7,7 @@
 
 **NeuroDB** is a next-generation key-value storage engine designed for **Metaverse** and **High-Frequency Motion Capture** workloads. It bridges the gap between traditional **LSM-Tree** architecture and cutting-edge **Learned Index** technology, offering a unified solution for high-throughput writing, spatial indexing, and low-latency point lookups.
 
-> **v2.1 Kernel Update**: Now features Z-Order Curve Spatial Indexing, Bloom Filters, and LSM Compaction.
+> **v2.2 AI-Kernel Update**: Now features **Incremental Learning (Fine-tuning)**, **Asynchronous Compaction**, and **Real-time Model Error Visualization**.
 
 ---
 
@@ -16,17 +16,17 @@
 ### 1. Spatial Indexing (Z-Order Curve)
 * **Dimensionality Reduction**: Implements **Morton Code (Z-Order Curve)** to map 3D motion data $(x, y, z)$ into 1D integer keys while preserving spatial locality.
 * **Locality-Aware Storage**: Spatially adjacent points in the 3D world are stored contiguously in memory/disk, optimizing CPU cache hits for spatial range queries.
-* **Zero-Overhead**: No complex R-Trees or Octrees required. Pure bitwise interleaving operations.
+* **Bounding Box Search**: Supports efficient 3D range queries by decomposing spatial volumes into continuous Z-value intervals.
 
-### 2. Adaptive Learned Index (RMI)
+### 2. Adaptive Learned Index (RMI & Fine-tuning)
 * **Recursive Model Index**: Replaces traditional B+ Trees with a **2-Layer Linear Regression Model**.
-* **O(1) Lookup**: Learns the Cumulative Distribution Function (CDF) of data keys to predict physical storage locations directly, bypassing logarithmic tree traversals.
+* **Incremental Learning**: Unlike traditional static learned indexes, NeuroDB supports **O(1) model fine-tuning**. New data appends trigger online regression updates without expensive retraining.
 * **Benchmarks**: Achieves **2.0x - 3.0x** faster read latency compared to Google's standard B-Tree implementation on synthetic datasets.
 
 ### 3. Industrial-Grade Kernel
-* **LSM-Tree Compaction**: Automatically merges fragmented index segments into a single, optimized "Giant Model" during background flushes, preventing read amplification.
-* **Anti-Cheat & Security**: Integrated **Bloom Filter** (Probabilistic Data Structure) to intercept invalid queries (e.g., non-existent keys) before they touch the storage engine, saving I/O resources.
-* **High Concurrency**: Features a **Sharded MemTable** architecture with fine-grained locking to support high-throughput parallel ingestion.
+* **Asynchronous Compaction**: Background goroutines automatically merge fragmented index segments into a single "Giant Model" without blocking the write path.
+* **Tiered Storage (Hot/Cold)**: Keeps the latest data in a lightweight "Hot" segment while compacting older data into stable "Cold" storage.
+* **Anti-Cheat & Security**: Integrated **Bloom Filter** (Probabilistic Data Structure) to intercept invalid queries (e.g., non-existent keys) before they touch the storage engine.
 
 ### 4. Hybrid Storage Architecture
 * **Memory**: Thread-safe Sharded SkipList/B-Tree (MemTable).
@@ -39,8 +39,8 @@
 NeuroDB includes a professional-grade **Kernel Console** for real-time observability and benchmarking.
 
 * **Real-time Metrics**: Monitor MemTable usage, LSM segments, and R/W ratios.
+* **Model Error Heatmap**: Visualize the prediction accuracy of the Learned Index in real-time. (X-Axis: Key Space, Y-Axis: Prediction Error).
 * **Spatial Engine**: Interactive tool to test Z-Order encoding and tracking.
-* **Range Scan**: Visualize spatial range queries and data locality.
 * **Performance Benchmarking**: One-click latency comparison between NeuroDB and B-Tree.
 
 ---
@@ -55,12 +55,6 @@ cd NeuroDB
 go mod tidy
 ```
 
-### 2. Run Server
-
-```bash
-go run cmd/server/main.go
-```
-
 ### 3. Access Console
 Open your browser and navigate to: **http://localhost:8080**
 
@@ -71,12 +65,11 @@ Open your browser and navigate to: **http://localhost:8080**
     * *Observation*: Watch the `MemTable` fill up and automatically flush to `LSM Segments`.
 2.  **Trigger Compaction**:
     * Continue ingesting data. When segments > 4, the **Compaction** process triggers, merging fragments into a single optimized model.
-3.  **Spatial Tracking**:
-    * Go to the **Spatial Index** panel.
-    * Enter coordinates (e.g., `X:100, Y:200, Z:50`) and click `Track`.
-    * See the generated **Z-Key** and how it maps 3D space to the 1D engine.
-4.  **Range Scan**:
-    * Use the **Range Scan** panel to query a range of keys (e.g., local spatial region).
+3.  **Visual Diagnostics**:
+    * Click `Refresh Prediction Heatmap` to see how well the linear model fits your data distribution. Green dots indicate high accuracy.
+4.  **Spatial Tracking**:
+    * Go to the **Spatial** Index panel.
+    * Enter coordinates `(e.g., X:100, Y:200, Z:50)` and click `Track`
 5.  **Benchmark**:
     * Click `Execute Performance Test` to verify the AI acceleration speedup (Green Bar).
 
@@ -90,14 +83,13 @@ Open your browser and navigate to: **http://localhost:8080**
 ├── pkg/
 │   ├── api/             # HTTP API & Control Plane Backend
 │   ├── common/          # Z-Order Spatial Encoding & Types
-│   ├── core/            # HybridStore (LSM Coordinator)
-│   ├── learned/         # RMI (Recursive Model Index) Implementation
+│   ├── core/            # HybridStore (LSM Coordinator & Compaction)
+│   ├── learned/         # RMI & Incremental Learning Logic
 │   ├── memory/          # Sharded MemTable
-│   ├── model/           # Linear Regression Models
+│   ├── model/           # Linear Regression Models (O(1) Update)
 │   ├── monitor/         # Workload Statistics
 │   └── storage/         # SQLite Persistence Layer
 └── static/              # Web Console (HTML/JS/CSS)
-```
 
 ## API Reference
 
@@ -109,6 +101,7 @@ Open your browser and navigate to: **http://localhost:8080**
 | `GET` | `/api/scan` | **[Spatial]** Range Query / Sequential Scan |
 | `GET` | `/api/benchmark` | Run Latency Comparison Test |
 | `GET` | `/api/stats` | Get Kernel Metrics |
+| `GET` | `/api/heatmap` | **[New]** Get Model Error Distribution Data |
 
 ---
 

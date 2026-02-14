@@ -7,6 +7,11 @@ import (
 type LinearModel struct {
 	Slope     float64
 	Intercept float64
+	n         float64
+	sumX      float64
+	sumY      float64
+	sumXY     float64
+	sumXX     float64
 }
 
 func NewLinearModel() *LinearModel {
@@ -14,61 +19,61 @@ func NewLinearModel() *LinearModel {
 }
 
 func (lm *LinearModel) Train(keys []common.KeyType) {
-	if len(keys) == 0 {
-		return
-	}
-
-	n := float64(len(keys))
-	var sumX, sumY, sumXY, sumXX float64
+	lm.n = float64(len(keys))
+	lm.sumX, lm.sumY, lm.sumXY, lm.sumXX = 0, 0, 0, 0
 
 	for i, key := range keys {
 		x := float64(key)
 		y := float64(i)
 
-		sumX += x
-		sumY += y
-		sumXY += x * y
-		sumXX += x * x
+		lm.sumX += x
+		lm.sumY += y
+		lm.sumXY += x * y
+		lm.sumXX += x * x
 	}
-
-	denominator := n*sumXX - sumX*sumX
-	if denominator == 0 {
-		lm.Slope = 0
-		lm.Intercept = 0
-	} else {
-		lm.Slope = (n*sumXY - sumX*sumY) / denominator
-		lm.Intercept = (sumY - lm.Slope*sumX) / n
-	}
-}
-
-func (lm *LinearModel) Predict(key common.KeyType) int {
-	return int(lm.Slope*float64(key) + lm.Intercept)
+	lm.solve()
 }
 
 func (lm *LinearModel) TrainWithPos(keys []common.KeyType, positions []int) {
-	if len(keys) == 0 {
-		return
-	}
-
-	n := float64(len(keys))
-	var sumX, sumY, sumXY, sumXX float64
+	lm.n = float64(len(keys))
+	lm.sumX, lm.sumY, lm.sumXY, lm.sumXX = 0, 0, 0, 0
 
 	for i, key := range keys {
 		x := float64(key)
 		y := float64(positions[i])
 
-		sumX += x
-		sumY += y
-		sumXY += x * y
-		sumXX += x * x
+		lm.sumX += x
+		lm.sumY += y
+		lm.sumXY += x * y
+		lm.sumXX += x * x
 	}
+	lm.solve()
+}
 
-	denominator := n*sumXX - sumX*sumX
+func (lm *LinearModel) Update(key common.KeyType, pos int) {
+	x := float64(key)
+	y := float64(pos)
+
+	lm.n += 1
+	lm.sumX += x
+	lm.sumY += y
+	lm.sumXY += x * y
+	lm.sumXX += x * x
+
+	lm.solve()
+}
+
+func (lm *LinearModel) solve() {
+	denominator := lm.n*lm.sumXX - lm.sumX*lm.sumX
 	if denominator == 0 {
 		lm.Slope = 0
 		lm.Intercept = 0
 	} else {
-		lm.Slope = (n*sumXY - sumX*sumY) / denominator
-		lm.Intercept = (sumY - lm.Slope*sumX) / n
+		lm.Slope = (lm.n*lm.sumXY - lm.sumX*lm.sumY) / denominator
+		lm.Intercept = (lm.sumY - lm.Slope*lm.sumX) / lm.n
 	}
+}
+
+func (lm *LinearModel) Predict(key common.KeyType) int {
+	return int(lm.Slope*float64(key) + lm.Intercept)
 }

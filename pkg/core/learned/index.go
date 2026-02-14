@@ -57,6 +57,34 @@ func Build(data []common.Record) *LearnedIndex {
 	}
 }
 
+func (li *LearnedIndex) Append(newData []common.Record) {
+	if len(newData) == 0 {
+		return
+	}
+
+	startPos := len(li.records)
+
+	li.records = append(li.records, newData...)
+
+	for i, rec := range newData {
+		globalPos := startPos + i
+		li.model.Update(rec.Key, globalPos)
+	}
+
+	for i, rec := range newData {
+		globalPos := startPos + i
+		predPos := li.model.Predict(rec.Key)
+		err := globalPos - predPos
+
+		if err < li.minErr {
+			li.minErr = err
+		}
+		if err > li.maxErr {
+			li.maxErr = err
+		}
+	}
+}
+
 func (li *LearnedIndex) GetAllRecords() []common.Record {
 	return li.records
 }
@@ -82,7 +110,6 @@ func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	}
 
 	if high-low < 16 {
-		// Linear Scan (SIMD friendly)
 		for i := low; i <= high; i++ {
 			if li.records[i].Key == key {
 				return li.records[i].Value, true

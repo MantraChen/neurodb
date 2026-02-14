@@ -6,7 +6,7 @@
     <title>NeuroDB Kernel Console</title>
     <style>
         :root {
-            /* Professional Dark Theme (Linear / GitHub Inspired) */
+            /* Professional Dark Theme (GitHub / VScode Inspired) */
             --bg-body: #0d1117;
             --bg-panel: #161b22;
             --bg-input: #010409;
@@ -49,33 +49,13 @@
             padding-bottom: 15px;
             border-bottom: 1px solid var(--border);
             margin-bottom: 20px;
+            flex-shrink: 0;
         }
 
-        h1 {
-            margin: 0;
-            font-size: 16px;
-            font-weight: 600;
-            letter-spacing: -0.02em;
-            color: var(--text-primary);
-        }
+        h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-primary); letter-spacing: -0.02em; }
+        .badge { font-family: var(--font-mono); font-size: 11px; background: var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text-secondary); margin-left: 8px; }
         
-        .badge {
-            font-family: var(--font-mono);
-            font-size: 11px;
-            background: var(--border);
-            padding: 2px 6px;
-            border-radius: 4px;
-            color: var(--text-secondary);
-            margin-left: 8px;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            font-family: var(--font-mono);
-            font-size: 11px;
-            color: var(--success);
-        }
+        .status-indicator { display: flex; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--success); }
         .dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; margin-right: 6px; }
 
         /* Metrics Grid */
@@ -84,6 +64,7 @@
             grid-template-columns: repeat(4, 1fr);
             gap: 12px;
             margin-bottom: 20px;
+            flex-shrink: 0;
         }
 
         .metric-card {
@@ -99,10 +80,10 @@
 
         /* Main Layout */
         .layout { display: flex; gap: 20px; flex: 1; min-height: 0; }
-        .col-left { width: 340px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
-        .col-right { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+        .col-left { width: 340px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 4px; }
+        .col-right { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow-y: auto; padding-right: 4px; }
 
-        /* Control Panels */
+        /* Panels */
         .panel {
             background: var(--bg-panel);
             border: 1px solid var(--border);
@@ -117,11 +98,15 @@
             margin-bottom: 12px;
             display: flex;
             justify-content: space-between;
+            align-items: center;
         }
 
-        /* Forms */
+        /* Inputs & Buttons */
         .form-row { display: flex; gap: -1px; margin-bottom: 8px; }
-        
+        .group-input input:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+        .group-input input:not(:first-child) { border-radius: 0; margin-left: -1px; }
+        .group-input button { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
+
         input {
             background: var(--bg-input);
             border: 1px solid var(--border);
@@ -134,10 +119,6 @@
             transition: border 0.1s;
         }
         input:focus { border-color: var(--accent); z-index: 2; }
-        
-        .group-input input:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-        .group-input input:not(:first-child) { border-radius: 0; margin-left: -1px; }
-        .group-input button { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
 
         button {
             background: var(--bg-panel);
@@ -149,19 +130,19 @@
             border-radius: 4px;
             cursor: pointer;
             white-space: nowrap;
+            transition: background 0.1s;
         }
         button:hover { background: #21262d; border-color: var(--border-active); }
         button:active { background: #292e36; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
         
         .btn-primary { background: var(--accent); border-color: rgba(255,255,255,0.1); color: white; }
         .btn-primary:hover { background: #1a5cce; }
-        
         .btn-danger { color: var(--danger); border-color: var(--border); }
-        .btn-danger:hover { color: #ff6a67; border-color: var(--danger); }
-
+        .btn-danger:hover { color: #ff6a67; border-color: var(--danger); background: rgba(218, 54, 51, 0.1); }
         .btn-block { width: 100%; text-align: center; }
 
-        /* Terminal / Logs */
+        /* Terminal */
         .terminal {
             background: #0d1117;
             border: 1px solid var(--border);
@@ -172,28 +153,37 @@
             font-size: 11px;
             overflow-y: auto;
             color: var(--text-secondary);
+            min-height: 150px;
         }
         .log-line { margin-bottom: 4px; display: flex; }
-        .ts { color: var(--text-tertiary); margin-right: 10px; user-select: none; }
+        .ts { color: var(--text-tertiary); margin-right: 10px; user-select: none; flex-shrink: 0; }
         .msg-info { color: var(--text-primary); }
         .msg-success { color: var(--success); }
         .msg-error { color: var(--danger); }
         .msg-sys { color: var(--accent); }
 
-        /* Benchmark Bars */
+        /* Visualization Elements */
         .bench-row { display: flex; align-items: center; margin-bottom: 8px; font-size: 11px; }
         .bench-label { width: 60px; color: var(--text-secondary); }
         .bench-track { flex: 1; height: 4px; background: #21262d; margin: 0 10px; border-radius: 2px; overflow: hidden; }
         .bench-fill { height: 100%; background: var(--text-secondary); width: 0%; transition: width 0.5s ease; }
         .bench-fill.neuro { background: var(--success); }
         .bench-val { width: 70px; text-align: right; font-family: var(--font-mono); }
+
+        #heatCanvas { width: 100%; height: 200px; background: #010409; border: 1px solid var(--border); border-radius: 4px; margin-top: 10px; }
+        
+        /* Scrollbar polish */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #484f58; }
     </style>
 </head>
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge">v2.1 Kernel</span></h1>
-        <div class="status-indicator"><div class="dot"></div>System Operational</div>
+        <h1>NeuroDB <span class="badge">v2.2 AI-Kernel</span></h1>
+        <div class="status-indicator"><div class="dot"></div>System Online</div>
     </header>
 
     <div class="metrics">
@@ -229,7 +219,7 @@
                     <input type="text" id="putVal" placeholder="Payload">
                     <button onclick="doPut()">Put</button>
                 </div>
-                <button class="btn-block" onclick="triggerIngest()">Batch Ingest (50k)</button>
+                <button class="btn-block" onclick="triggerIngest()">Start Batch Ingest (50k)</button>
             </div>
 
             <div class="panel">
@@ -240,6 +230,7 @@
                     <input type="number" id="mz" placeholder="Z" value="50">
                     <button class="btn-primary" onclick="doMoCap()">Track</button>
                 </div>
+                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Maps 3D coordinates to 1D Linear Key</div>
             </div>
 
             <div class="panel">
@@ -259,13 +250,16 @@
 
             <div class="panel">
                 <div class="panel-title">Kernel Admin</div>
-                <button class="btn-block" onclick="downloadCSV()">Export Diagnostics</button>
-                <button class="btn-block btn-danger" onclick="resetDB()" style="margin-top: 8px;">Reset Kernel</button>
+                <div class="form-row">
+                    <button class="btn-block" onclick="downloadCSV()">Export Model CSV</button>
+                </div>
+                <button class="btn-block btn-danger" onclick="resetDB()">Reset Kernel State</button>
             </div>
         </div>
 
         <div class="col-right">
-            <div class="panel" style="padding-bottom: 8px;">
+            
+            <div class="panel">
                 <div class="panel-title">
                     Latency Benchmark
                     <span id="speedupVal" style="color: var(--success); font-family: var(--font-mono);">0.00x Speedup</span>
@@ -283,14 +277,25 @@
                 <button class="btn-primary btn-block" onclick="runBenchmark()" id="btnBench" style="margin-top:10px;">Execute Performance Test</button>
             </div>
 
+            <div class="panel">
+                <div class="panel-title">
+                    Learned Index Error Heatmap
+                    <button onclick="loadHeatmap()" style="font-size: 10px; padding: 2px 8px; margin: 0; width: auto;">Refresh</button>
+                </div>
+                <canvas id="heatCanvas" width="800" height="200"></canvas>
+                <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px; text-align: center;">
+                    X-Axis: Key Space | Y-Axis: Prediction Error (Center = 0)
+                </div>
+            </div>
+
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-info">Kernel initialized. Waiting for instruction.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">Kernel initialized. Async compaction & Visualization enabled.</span></div>
             </div>
         </div>
     </div>
 
     <script>
-        // Logger
+        // --- Core Utilities ---
         function log(msg, type = 'info') {
             const el = document.getElementById('console');
             const now = new Date().toISOString().split('T')[1].slice(0,8);
@@ -306,7 +311,7 @@
             el.scrollTop = el.scrollHeight;
         }
 
-        // Stats Polling
+        // --- Metrics Polling ---
         async function updateStats() {
             try {
                 const res = await fetch('/api/stats');
@@ -318,27 +323,27 @@
                 document.getElementById('rwVal').innerText = parseFloat(data.rw_ratio).toFixed(2);
                 
                 const modeEl = document.getElementById('modeVal');
-                if (data.mode.includes("AI")) {
+                if (data.mode && data.mode.includes("AI")) {
                     modeEl.innerText = "AI-Optimized";
                     modeEl.style.color = "var(--success)";
                 } else {
-                    modeEl.innerText = "LSM-Write";
+                    modeEl.innerText = "Write-Heavy";
                     modeEl.style.color = "var(--text-primary)";
                 }
             } catch(e) {}
         }
         setInterval(updateStats, 1000);
 
-        // API Calls
+        // --- Write Operations ---
         async function doPut() {
             const k = parseInt(document.getElementById('putKey').value);
-            const v = document.getElementById('putVal').value;
-            if(!k) return;
+            const v = document.getElementById('putVal').value || "val";
+            if(isNaN(k)) return;
             try {
                 await fetch('/api/put', { method:'POST', body: JSON.stringify({key:k, value:v})});
                 log(`Write: Key=${k}`, 'ok');
                 document.getElementById('putKey').value = k+1;
-            } catch(e) { log(e, 'err'); }
+            } catch(e) { log("Put failed: " + e, 'err'); }
         }
 
         async function triggerIngest() {
@@ -346,8 +351,7 @@
             log("Starting ingestion process...", 'sys');
             try {
                 await fetch('/api/ingest', { method:'POST'});
-                // Polling for completion log simulation
-                setTimeout(() => log("Ingestion complete. Flushing MemTable.", 'ok'), 4000);
+                setTimeout(() => log("Ingestion simulation continuing in background...", 'sys'), 1000);
             } catch(e) { log(e, 'err'); }
         }
 
@@ -359,19 +363,20 @@
                 const res = await fetch('/api/mocap/put', { method:'POST', body: JSON.stringify({x,y,z, data:"Frame"})});
                 const d = await res.json();
                 log(`Spatial Index: (${x},${y},${z}) -> Z-Key: ${d.spatial_key}`, 'sys');
+                // Auto increment for easier testing
                 document.getElementById('mx').value = x+1;
             } catch(e) { log(e, 'err'); }
         }
 
+        // --- Read Operations ---
         async function doGet() {
             const k = document.getElementById('getKey').value;
             if(!k) return;
-            const start = performance.now();
             try {
                 const res = await fetch(`/api/get?key=${k}`);
                 const d = await res.json();
                 if(res.ok) log(`Query Hit: Key=${k} (${d.latency_ns}ns)`, 'ok');
-                else log(`Query Miss: Key=${k} (Filtered)`, 'err');
+                else log(`Query Miss: Key=${k}`, 'err');
             } catch(e) { log(`Error querying key ${k}`, 'err'); }
         }
 
@@ -385,17 +390,18 @@
                 const res = await fetch(`/api/scan?start=${s}&end=${e}`);
                 const d = await res.json();
                 log(`Scan Result: Found ${d.count} records.`, 'ok');
-                if(d.count > 0 && d.count < 10) {
-                     // If small result, print keys
+                if(d.count > 0 && d.count < 20) {
                      const keys = d.data.map(r => r.Key).join(", ");
                      log(`> Keys: [${keys}]`, 'info');
                 }
             } catch(e) { log(e, 'err'); }
         }
 
+        // --- Visualization & Benchmarks ---
         async function runBenchmark() {
             const btn = document.getElementById('btnBench');
-            btn.innerText = "Running..."; btn.disabled = true;
+            const originalText = btn.innerText;
+            btn.innerText = "Running Test..."; btn.disabled = true;
             try {
                 const res = await fetch('/api/benchmark');
                 const d = await res.json();
@@ -404,22 +410,85 @@
                 document.getElementById('valAI').innerText = d.ai_avg_ns;
                 document.getElementById('speedupVal').innerText = d.speedup + " Speedup";
                 
-                const max = Math.max(parseFloat(d.btree_avg_ns), parseFloat(d.ai_avg_ns));
-                document.getElementById('barB').style.width = (parseFloat(d.btree_avg_ns)/max*100) + "%";
-                document.getElementById('barAI').style.width = (parseFloat(d.ai_avg_ns)/max*100) + "%";
+                // Parse "123.45 ns" to float for bar width calc
+                const valB = parseFloat(d.btree_avg_ns);
+                const valAI = parseFloat(d.ai_avg_ns);
+                const max = Math.max(valB, valAI);
+                
+                document.getElementById('barB').style.width = (valB/max*100) + "%";
+                document.getElementById('barAI').style.width = (valAI/max*100) + "%";
                 
                 log(`Benchmark: ${d.speedup} speedup achieved.`, 'sys');
             } catch(e) { log(e, 'err'); }
-            finally { btn.innerText = "Execute Performance Test"; btn.disabled = false; }
+            finally { btn.innerText = originalText; btn.disabled = false; }
         }
 
+        async function loadHeatmap() {
+            const cvs = document.getElementById('heatCanvas');
+            const ctx = cvs.getContext('2d');
+            const W = cvs.width;
+            const H = cvs.height;
+
+            // Clear & Draw Axis
+            ctx.fillStyle = '#010409';
+            ctx.fillRect(0,0,W,H);
+            ctx.strokeStyle = '#30363d';
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+
+            try {
+                log("Fetching model diagnostics...", 'info');
+                const res = await fetch('/api/heatmap');
+                const data = await res.json();
+                
+                if(!data || data.length === 0) {
+                    log("No model data available (Try inserting >50k records)", 'err');
+                    return;
+                }
+
+                // Normalize Keys for X-axis
+                const minK = data[0].k;
+                const maxK = data[data.length-1].k;
+                const rangeK = maxK - minK || 1;
+
+                data.forEach(p => {
+                    const x = ((p.k - minK) / rangeK) * W;
+                    // Scale Error: Assume typical error range is within -50 to +50
+                    // H/2 is the zero line. 
+                    let y = (H/2) - (p.e * 2); 
+                    
+                    // Clamp to canvas
+                    if(y < 0) y = 0;
+                    if(y > H) y = H;
+
+                    // Color Coding
+                    const errMag = Math.abs(p.e);
+                    if(errMag < 5) ctx.fillStyle = '#238636';      // Green (Excellent)
+                    else if(errMag < 20) ctx.fillStyle = '#d29922'; // Yellow (Acceptable)
+                    else ctx.fillStyle = '#da3633';                 // Red (Poor)
+
+                    ctx.fillRect(x, y, 2, 2);
+                });
+                log(`Heatmap updated with ${data.length} points.`, 'ok');
+
+            } catch(e) { log("Error loading heatmap: " + e, 'err'); }
+        }
+
+        // --- Admin ---
         function downloadCSV() { window.location.href = "/api/export"; }
         
         async function resetDB() {
-            if(!confirm("Confirm Kernel Reset? Data will be wiped.")) return;
-            await fetch('/api/reset');
-            log("Kernel state reset.", 'sys');
-            updateStats();
+            if(!confirm("WARNING: This will wipe all data and reset the kernel. Continue?")) return;
+            try {
+                await fetch('/api/reset');
+                log("Kernel state reset successfully.", 'sys');
+                // Clear visualizations
+                document.getElementById('valB').innerText = "--";
+                document.getElementById('valAI').innerText = "--";
+                const cvs = document.getElementById('heatCanvas');
+                cvs.getContext('2d').clearRect(0,0,cvs.width,cvs.height);
+                updateStats();
+            } catch(e) { log(e, 'err'); }
         }
     </script>
 </body>
