@@ -82,7 +82,8 @@ func (hs *HybridStore) adaptiveFlush() {
 	hs.mutex.Lock()
 	defer hs.mutex.Unlock()
 
-	if hs.mutableMem.Count() < 1000 {
+	count := hs.mutableMem.Count()
+	if count < 1000 {
 		return
 	}
 
@@ -96,7 +97,7 @@ func (hs *HybridStore) adaptiveFlush() {
 	})
 
 	shouldTrainModel := ratio > 0.0001
-	canFineTune := shouldTrainModel && len(hs.learnedIndexes) > 0 && len(data) < 50000
+	canFineTune := shouldTrainModel && len(hs.learnedIndexes) > 0 && count < 50000
 
 	if canFineTune {
 		log.Println("[Optimizer] Fine-tuning existing model (Incremental Learning)...")
@@ -105,10 +106,10 @@ func (hs *HybridStore) adaptiveFlush() {
 		lastIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
 		lastIndex.Append(data)
 
-		log.Printf("[NeuroDB] Model Fine-tuned in %v. Total Records: %d", time.Since(start), lastIndex.Size())
+		log.Printf("[NeuroDB] Model Fine-tuned in %v. New Size: %d", time.Since(start), lastIndex.Size())
 
-	} else if shouldTrainModel {
-		log.Println("[Optimizer] Workload is Read-Intensive. Training NEW Model...")
+	} else {
+		log.Println("[Optimizer] Building Model for Segment (Full Build)...")
 		start := time.Now()
 
 		li := learned.Build(data)
@@ -119,8 +120,6 @@ func (hs *HybridStore) adaptiveFlush() {
 		}
 
 		log.Printf("[NeuroDB] Model Trained in %v. Records: %d", time.Since(start), li.Size())
-	} else {
-		log.Println("[Optimizer] Write-Intensive. Flushing without training.")
 	}
 
 	hs.mutableMem = memory.NewMemTable(32)
@@ -191,17 +190,22 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 		return nil, false
 	}
 
-	defer hs.mutex.RUnlock()
-
 	if val, ok := hs.mutableMem.Get(key); ok {
+		hs.mutex.RUnlock()
 		hs.stats.RecordHit()
 		return val, true
 	}
 
 	for i := len(hs.learnedIndexes) - 1; i >= 0; i-- {
 		if val, ok := hs.learnedIndexes[i].Get(key); ok {
+			hs.mutex.RUnlock()
 			return val, true
 		}
+	}
+	hs.mutex.RUnlock()
+
+	if val, found := hs.backend.Read(key); found {
+		return val, true
 	}
 
 	return nil, false
@@ -209,6 +213,13 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 
 func (hs *HybridStore) Close() {
 	hs.backend.Close()
+}
+
+func (hs *HybridStore) DebugPrint() {
+	hs.mutex.RLock()
+	defer hs.mutex.RUnlock()
+	log.Printf("Store Status: MemTable: %d, Learned Layers: %d",
+		hs.mutableMem.Count(), len(hs.learnedIndexes))
 }
 
 func (hs *HybridStore) Stats() map[string]interface{} {
@@ -239,7 +250,7 @@ func (hs *HybridStore) ExportModelData() ([]learned.DiagnosticPoint, error) {
 	defer hs.mutex.RUnlock()
 
 	if len(hs.learnedIndexes) == 0 {
-		return nil, fmt.Errorf("no learned indexes available")
+		return nil, fmt.Errorf("no learned indexes available (try writing more data > 50k)")
 	}
 	latestIndex := hs.learnedIndexes[len(hs.learnedIndexes)-1]
 	return latestIndex.ExportDiagnostics(), nil
@@ -285,6 +296,25 @@ func (hs *HybridStore) Scan(start, end common.KeyType) []common.Record {
 	for _, li := range hs.learnedIndexes {
 		res := li.Scan(start, end)
 		results = append(results, res...)
+	}
+	return results
+}
+
+func (hs *HybridStore) ScanBox(minX, minY, minZ, maxX, maxY, maxZ uint32) []common.Record {
+	hs.mutex.RLock()
+	defer hs.mutex.RUnlock()
+
+	ranges, _ := common.GetZRanges(minX, minY, minZ, maxX, maxY, maxZ)
+	var results []common.Record
+
+	for _, r := range ranges {
+		candidates := hs.Scan(common.KeyType(r.Min), common.KeyType(r.Max))
+
+		for _, rec := range candidates {
+			if common.InRange(int64(rec.Key), minX, minY, minZ, maxX, maxY, maxZ) {
+				results = append(results, rec)
+			}
+		}
 	}
 	return results
 }
