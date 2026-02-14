@@ -22,22 +22,38 @@ func NewServer(store *core.HybridStore) *Server {
 	return &Server{store: store}
 }
 
-func (s *Server) RegisterRoutes() {
-	http.HandleFunc("/api/get", s.handleGet)
-	http.HandleFunc("/api/put", s.handlePut)
-	http.HandleFunc("/api/del", s.handleDel)
-	http.HandleFunc("/api/stats", s.handleStats)
-	http.HandleFunc("/api/export", s.handleExport)
-	http.HandleFunc("/api/ingest", s.handleIngest)
-	http.HandleFunc("/api/ingest/status", s.handleIngestStatus)
-	http.HandleFunc("/api/benchmark", s.handleBenchmark)
-	http.HandleFunc("/api/reset", s.handleReset)
-	http.HandleFunc("/api/mocap/put", s.handleMoCapPut)
-	http.HandleFunc("/api/scan", s.handleScan)
-	http.HandleFunc("/api/heatmap", s.handleHeatmap)
+// recoverMiddleware recovers panics and returns 500 JSON so one handler panic does not kill the process.
+func recoverMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Printf("[API] panic recovered: %v", err)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
+			}
+		}()
+		next(w, r)
+	}
+}
 
-	fs := http.FileServer(http.Dir("./static"))
-	http.Handle("/", fs)
+func (s *Server) RegisterRoutes() {
+	http.HandleFunc("/api/get", recoverMiddleware(s.handleGet))
+	http.HandleFunc("/api/put", recoverMiddleware(s.handlePut))
+	http.HandleFunc("/api/del", recoverMiddleware(s.handleDel))
+	http.HandleFunc("/api/stats", recoverMiddleware(s.handleStats))
+	http.HandleFunc("/api/export", recoverMiddleware(s.handleExport))
+	http.HandleFunc("/api/ingest", recoverMiddleware(s.handleIngest))
+	http.HandleFunc("/api/ingest/status", recoverMiddleware(s.handleIngestStatus))
+	http.HandleFunc("/api/benchmark", recoverMiddleware(s.handleBenchmark))
+	http.HandleFunc("/api/reset", recoverMiddleware(s.handleReset))
+	http.HandleFunc("/api/mocap/put", recoverMiddleware(s.handleMoCapPut))
+	http.HandleFunc("/api/scan", recoverMiddleware(s.handleScan))
+	http.HandleFunc("/api/heatmap", recoverMiddleware(s.handleHeatmap))
+
+	http.Handle("/", recoverMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		http.FileServer(http.Dir("./static")).ServeHTTP(w, r)
+	}))
 }
 
 func (s *Server) handleDel(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +204,6 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		log.Println("[API] Starting randomized auto-ingestion...")
-		rand.Seed(time.Now().UnixNano())
 		currentKey := rand.Intn(1000000)
 		count := 100000
 
