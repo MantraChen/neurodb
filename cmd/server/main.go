@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"neurodb/pkg/api"
@@ -15,8 +16,11 @@ import (
 )
 
 func main() {
+	configPath := flag.String("config", "", "Path to config file (default: configs/neuro.yaml or neuro.yaml)")
+	flag.Parse()
+
 	log.Println("[Main] Loading configuration...")
-	cfg, err := config.Load("configs/neuro.yaml")
+	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Printf("[Warning] Failed to load config: %v. Using defaults.", err)
 	}

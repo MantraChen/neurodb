@@ -37,7 +37,18 @@ func recoverMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func (s *Server) RegisterRoutes() {
+	http.HandleFunc("/api/health", recoverMiddleware(s.handleHealth))
 	http.HandleFunc("/api/get", recoverMiddleware(s.handleGet))
 	http.HandleFunc("/api/put", recoverMiddleware(s.handlePut))
 	http.HandleFunc("/api/del", recoverMiddleware(s.handleDel))
