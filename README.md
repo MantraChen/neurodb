@@ -42,7 +42,7 @@ go run cmd/server/main.go
 ```
 
 ## 2. Use the CLI Tool
-###The CLI now supports full CRUD operations and custom server addresses.
+The CLI now supports full CRUD operations and custom server addresses.
 ```bash
 go run cmd/cli/main.go -addr localhost:9090
 
@@ -71,11 +71,10 @@ go run cmd/benchmark/main.go
 ```
 
 ## 4.Visual Dashboard
-###Open your browser and navigate to: http://localhost:8080
+Open your browser and navigate to: http://localhost:8080
 * **LSM Metrics**: WAL Queue, MemTable Size, SSTable Count.
 * **AI Diagnostics**: Real-time Error Heatmap of the Learned Index model.
 * **Control Panel**: Trigger manual ingestion, compaction, or system reset.
-
 ##Configuration (*configs/neuro.yaml*)
 ```yaml
 server:
