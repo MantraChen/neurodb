@@ -9,6 +9,9 @@ server:
 storage:
   path: "neuro_data"  # Data directory (WAL + SSTables)
   wal_buffer_size: 10000
+  memtable_flush_threshold: 2000  # Flush MemTable when record count >= this
+  compaction_threshold: 4         # Trigger compaction when SSTable count >= this
+  wal_batch_size: 500             # WAL batch write size
 
 system:
   shard_count: 16

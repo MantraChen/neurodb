@@ -18,8 +18,11 @@ type ServerConfig struct {
 }
 
 type StorageConfig struct {
-	Path          string `yaml:"path"`
-	WalBufferSize int    `yaml:"wal_buffer_size"`
+	Path                   string `yaml:"path"`
+	WalBufferSize          int    `yaml:"wal_buffer_size"`
+	MemTableFlushThreshold int `yaml:"memtable_flush_threshold"`
+	CompactionThreshold    int `yaml:"compaction_threshold"`
+	WalBatchSize           int `yaml:"wal_batch_size"`
 }
 
 type SystemConfig struct {
@@ -35,8 +38,11 @@ func Load(configPath string) (*Config, error) {
 			TCPAddr: ":9090",
 		},
 		Storage: StorageConfig{
-			Path:          "neuro_data",
-			WalBufferSize: 5000,
+			Path:                   "neuro_data",
+			WalBufferSize:          5000,
+			MemTableFlushThreshold: 2000,
+			CompactionThreshold:    4,
+			WalBatchSize:           500,
 		},
 		System: SystemConfig{
 			ShardCount:     16,
@@ -52,9 +58,11 @@ func Load(configPath string) (*Config, error) {
 				if err := yaml.Unmarshal(data, cfg); err != nil {
 					return cfg, err
 				}
+				applyStorageDefaults(cfg)
 				return cfg, nil
 			}
 		}
+		applyStorageDefaults(cfg)
 		return cfg, nil // no file found: use defaults
 	}
 
@@ -67,5 +75,18 @@ func Load(configPath string) (*Config, error) {
 		return cfg, err
 	}
 
+	applyStorageDefaults(cfg)
 	return cfg, nil
+}
+
+func applyStorageDefaults(cfg *Config) {
+	if cfg.Storage.MemTableFlushThreshold <= 0 {
+		cfg.Storage.MemTableFlushThreshold = 2000
+	}
+	if cfg.Storage.CompactionThreshold <= 0 {
+		cfg.Storage.CompactionThreshold = 4
+	}
+	if cfg.Storage.WalBatchSize <= 0 {
+		cfg.Storage.WalBatchSize = 500
+	}
 }
