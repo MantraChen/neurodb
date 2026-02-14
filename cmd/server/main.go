@@ -6,6 +6,7 @@ import (
 	"neurodb/pkg/api"
 	"neurodb/pkg/config"
 	"neurodb/pkg/core"
+	"neurodb/pkg/network"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,24 +21,29 @@ func main() {
 	}
 
 	store := core.NewHybridStore(cfg)
-	log.Printf("[Main] NeuroDB Kernel initialized (Shards: %d, WAL Buffer: %d)",
-		cfg.System.ShardCount, cfg.Storage.WalBufferSize)
+	log.Printf("[Main] NeuroDB Kernel initialized (Shards: %d)", cfg.System.ShardCount)
 
-	server := api.NewServer(store)
+	httpServer := api.NewServer(store)
 	go func() {
-		server.Start(cfg.Server.Addr)
+		httpServer.Start(cfg.Server.Addr) // :8080
+	}()
+
+	tcpServer := network.NewTCPServer(store)
+	go func() {
+		if err := tcpServer.Start(":9090"); err != nil {
+			log.Fatalf("TCP Server failed: %v", err)
+		}
 	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	<-quit
-	log.Println("\n[Main] Shutting down server...")
+	log.Println("\n[Main] Shutting down...")
 
 	_, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	store.Close()
-	log.Println("[Main] Storage engine closed.")
-	log.Println("[Main] Server exited cleanly.")
+	log.Println("[Main] Storage closed. Bye.")
 }
