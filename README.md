@@ -8,7 +8,7 @@
 
 **NeuroDB** is a next-generation key-value storage engine designed for **Metaverse** and **High-Frequency Motion Capture** workloads. It implements a full **LSM-Tree (Log-Structured Merge Tree)** architecture from scratch, bridging the gap between traditional disk-based storage and cutting-edge **Learned Index** technology.
 
-> **v2.8 Release**: Range Scans, Tombstone Deletes, Persistence Recovery, TCP Client SDK, **Simple SQL** (`SELECT * FROM table`), **Configurable thresholds**, and enhanced Dashboard.
+> **v2.9 Release**: Leveled LSM (`L0/L1`), startup checkpoint + WAL truncate, persisted Learned Index (`.li`), Prometheus `/metrics`, backup/restore API, SQL `WHERE id ...` and `LIMIT`, plus dashboard and test hardening.
 
 ---
 
@@ -17,7 +17,8 @@
 ### 1. Industrial-Grade Storage Engine (LSM-Tree)
 * **Write-Ahead Log (WAL)**: Ensures data durability. Writes are appended to WAL with CRC32 checksums.
 * **MemTable**: Sharded in-memory B-Tree acts as a high-throughput write buffer.
-* **SSTable & Compaction**: Asynchronous flushing to disk and background **K-Way Merge Compaction** to reduce read amplification.
+* **Leveled SSTables (`L0/L1`)**: Flush goes to `L0`, then background compaction merges `L0 -> L1`.
+* **Startup Checkpoint + WAL Truncate**: Rebuilds durable checkpoints and controls replay time/disk growth.
 * **Tombstone Deletes**: logical deletion support with garbage collection during compaction.
 
 ### 2. High-Performance Networking
@@ -28,9 +29,11 @@
 ### 3. Spatial & AI Intelligence
 * **Z-Order Curve**: Maps 3D $(x, y, z)$ coordinates to 1D keys for spatial locality.
 * **Learned Index (RMI)**: Replaces traditional B-Trees/Bloom Filters in read path, using Recursive Model Indexes to predict data location with $O(1)$ theoretical complexity.
+* **RMI Persistence**: Learned indexes are persisted as `.li` files and loaded on restart when SST signature matches.
 
-### 4. Simple SQL Layer
-* **SELECT \* FROM table**: Minimal SQL parser on top of the KV engine. Table names map to deterministic key ranges via hash.
+### 4. SQL Layer
+* **SELECT \* FROM table [WHERE id <op> <int>] [LIMIT n]**.
+* `WHERE` currently supports `id` only, with operators: `= != > < >= <=`.
 
 ---
 
@@ -79,17 +82,19 @@ go run cmd/benchmark/main.go
 
 ## 4. Visual Dashboard
 Open your browser and navigate to: http://localhost:8080
-* **LSM Metrics**: WAL Queue, MemTable Size, SSTable Count.
+* **LSM Metrics**: WAL Queue, MemTable Size, `L0/L1` SSTable counts.
 * **AI Diagnostics**: Real-time Error Heatmap of the Learned Index model.
 * **Scan Results**: Range Scan and SQL query results displayed in-table.
-* **SQL Query**: Execute `SELECT * FROM <table>` directly in the UI.
+* **SQL Query**: Execute `SELECT * FROM <table> [WHERE id ...] [LIMIT ...]` directly in the UI.
+* **Backup/Restore**: Export JSON backup and restore from file in the admin panel.
 * **Loading Feedback**: Progress indicators for Ingest, Benchmark, and Scan.
 ## Configuration
 The server looks for `configs/neuro.yaml` or `neuro.yaml`; use `-config` to override. If no file is found, defaults are used. To customize, copy `configs/config.example.yaml` to `configs/neuro.yaml` and edit.
 
-**Health check**: `GET /api/health` returns `{"status":"ok"}` (for load balancers / k8s).
-
-**SQL API**: `POST /api/sql` with `{"query": "SELECT * FROM users"}` returns `{"table","count","rows"}`.
+**Health check**: `GET /api/health` returns `{"status":"ok"}`.
+**Prometheus metrics**: `GET /metrics`.
+**Backup API**: `GET /api/backup`, `POST /api/restore`.
+**SQL API**: `POST /api/sql` with `{"query": "SELECT * FROM users WHERE id >= 100 LIMIT 10"}` returns `{"table","count","rows"}`.
 
 ```yaml
 server:
@@ -148,12 +153,14 @@ func main() {
        |
        | (Flush when full)
        v
-[ Immutable SSTables (Disk) ]
-[ Level 0 ] [ Level 0 ] ...
+[ SSTables (Disk) ]
+[ L0 ] [ L0 ] ...
        |
-       | (Background Compaction)
+       | (Leveled Compaction)
        v
-[ Merged SSTable (Level 1) ]
+[ L1 ]
+       |
+       +---> [ Persisted Learned Index (.li) ]
 ```
 
 ## Project Structure
@@ -167,10 +174,10 @@ func main() {
 │   ├── client/      # Go SDK (TCP Driver)
 │   ├── core/        # HybridStore (LSM Logic, Compaction)
 │   ├── protocol/    # Binary Protocol Spec
-│   ├── sql/         # Simple SQL Parser (SELECT * FROM table)
+│   ├── sql/         # SQL Parser (SELECT + WHERE id + LIMIT)
 │   ├── storage/     # WAL & SSTable Implementation
 │   ├── common/      # Spatial (Z-Order) Utils
-│   └── learned/     # RMI Model Logic
+│   └── core/learned/# RMI Model Logic
 └── static/          # Web Console (HTML/JS)
 ```
 

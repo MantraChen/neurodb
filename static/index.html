@@ -199,7 +199,7 @@
         <h1>NeuroDB <span class="badge badge-live">v2.8</span></h1>
         <div class="status-indicator">
             <div class="dot"></div>
-            <span>Engine: Sharded + LSM-Tree</span>
+            <span>Engine: Sharded + LSM-Tree (L0/L1)</span>
         </div>
     </header>
 
@@ -212,12 +212,12 @@
         <div class="metric-card">
             <div class="metric-label">MemTable</div>
             <div class="metric-value" id="memVal">0</div>
-            <div class="metric-sub">RAM Records</div>
+            <div class="metric-sub" id="memSub">RAM Records</div>
         </div>
         <div class="metric-card">
             <div class="metric-label">Disk SSTables</div>
             <div class="metric-value val-sst" id="sstVal">0</div>
-            <div class="metric-sub">Flushed Files</div>
+            <div class="metric-sub">L0/L1 Files</div>
         </div>
         <div class="metric-card">
             <div class="metric-label">Learned Index</div>
@@ -286,13 +286,20 @@
                     <input type="text" id="sqlQuery" placeholder="SELECT * FROM users" style="flex:1;">
                     <button onclick="doSQL()" id="btnSQL">Execute</button>
                 </div>
-                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Supported: SELECT * FROM &lt;table&gt;</div>
+                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Supported: SELECT * FROM &lt;table&gt; [WHERE id &lt;op&gt; &lt;int&gt;] [LIMIT n]</div>
             </div>
 
             <div class="panel">
                 <div class="panel-title">Kernel Admin</div>
                 <div class="form-row">
                     <button class="btn-block" onclick="downloadCSV()">Export Model CSV</button>
+                </div>
+                <div class="form-row">
+                    <button class="btn-block" onclick="backupDB()">Backup JSON</button>
+                </div>
+                <div class="form-row">
+                    <input type="file" id="restoreFile" accept="application/json" style="display:none">
+                    <button class="btn-block" onclick="triggerRestore()">Restore JSON</button>
                 </div>
                 <button class="btn-block btn-danger" onclick="resetDB()">Reset & Clear Disk</button>
             </div>
@@ -367,9 +374,12 @@
                 if (res.ok) {
                     const data = await res.json();
                     document.getElementById('memVal').innerText = data.memtable_record_count.toLocaleString();
-                    document.getElementById('sstVal').innerText = (data.sstable_count || 0).toLocaleString();
+                    const l0 = data.l0_sstable_count || 0;
+                    const l1 = data.l1_sstable_count || 0;
+                    document.getElementById('sstVal').innerText = `${l0}/${l1}`;
                     document.getElementById('modelVal').innerText = data.learned_indexes_count;
                     document.getElementById('shardVal').innerText = data.shards_active || "--";
+                    document.getElementById('memSub').innerText = `RAM Records | WAL ${(data.wal_size_bytes || 0).toLocaleString()} B`;
                     
                     const queueSize = data.pending_writes || 0;
                     const qEl = document.getElementById('queueVal');
@@ -613,6 +623,46 @@
 
         // --- Admin ---
         function downloadCSV() { window.location.href = "/api/export"; }
+        
+        async function backupDB() {
+            try {
+                const res = await fetch('/api/backup');
+                if (!res.ok) throw new Error(`backup failed: ${res.status}`);
+                const data = await res.json();
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                a.href = url;
+                a.download = `neurodb-backup-${ts}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                log(`Backup exported (${data.record_count || 0} records).`, 'ok');
+            } catch (e) { log(`Backup error: ${e}`, 'err'); }
+        }
+
+        function triggerRestore() {
+            const input = document.getElementById('restoreFile');
+            input.value = '';
+            input.onchange = async () => {
+                const file = input.files && input.files[0];
+                if (!file) return;
+                if (!confirm("Restore will reset current data. Continue?")) return;
+                try {
+                    const text = await file.text();
+                    const res = await fetch('/api/restore', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: text
+                    });
+                    const data = await res.json();
+                    if (!res.ok || data.error) throw new Error(data.error || `restore failed: ${res.status}`);
+                    log(`Restore completed (${data.restored_count || 0} records).`, 'ok');
+                    updateStats();
+                } catch (e) { log(`Restore error: ${e}`, 'err'); }
+            };
+            input.click();
+        }
         
         async function resetDB() {
             if(!confirm("WARNING: This will wipe WAL & SSTables. Continue?")) return;
