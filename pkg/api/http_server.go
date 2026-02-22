@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"neurodb/pkg/common"
@@ -52,6 +53,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) RegisterRoutes() {
 	http.HandleFunc("/api/health", recoverMiddleware(s.handleHealth))
+	http.HandleFunc("/metrics", recoverMiddleware(s.handleMetrics))
 	http.HandleFunc("/api/get", recoverMiddleware(s.handleGet))
 	http.HandleFunc("/api/put", recoverMiddleware(s.handlePut))
 	http.HandleFunc("/api/del", recoverMiddleware(s.handleDel))
@@ -61,6 +63,8 @@ func (s *Server) RegisterRoutes() {
 	http.HandleFunc("/api/ingest/status", recoverMiddleware(s.handleIngestStatus))
 	http.HandleFunc("/api/benchmark", recoverMiddleware(s.handleBenchmark))
 	http.HandleFunc("/api/reset", recoverMiddleware(s.handleReset))
+	http.HandleFunc("/api/backup", recoverMiddleware(s.handleBackup))
+	http.HandleFunc("/api/restore", recoverMiddleware(s.handleRestore))
 	http.HandleFunc("/api/mocap/put", recoverMiddleware(s.handleMoCapPut))
 	http.HandleFunc("/api/scan", recoverMiddleware(s.handleScan))
 	http.HandleFunc("/api/heatmap", recoverMiddleware(s.handleHeatmap))
@@ -70,6 +74,81 @@ func (s *Server) RegisterRoutes() {
 	http.Handle("/", recoverMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		http.FileServer(http.Dir(staticDir)).ServeHTTP(w, r)
 	}))
+}
+
+type backupPayload struct {
+	GeneratedAt time.Time       `json:"generated_at"`
+	RecordCount int             `json:"record_count"`
+	Records     []common.Record `json:"records"`
+}
+
+func numberToFloat64(v interface{}) float64 {
+	switch n := v.(type) {
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case uint64:
+		return float64(n)
+	case float64:
+		return n
+	default:
+		return 0
+	}
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	stats := s.store.Stats()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	fmt.Fprintln(w, "# HELP neurodb_reads_total Total read operations.")
+	fmt.Fprintln(w, "# TYPE neurodb_reads_total counter")
+	fmt.Fprintf(w, "neurodb_reads_total %.0f\n", numberToFloat64(stats["read_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_writes_total Total write operations.")
+	fmt.Fprintln(w, "# TYPE neurodb_writes_total counter")
+	fmt.Fprintf(w, "neurodb_writes_total %.0f\n", numberToFloat64(stats["write_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_hits_total Total read hits.")
+	fmt.Fprintln(w, "# TYPE neurodb_hits_total counter")
+	fmt.Fprintf(w, "neurodb_hits_total %.0f\n", numberToFloat64(stats["hit_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_memtable_records Current memtable records.")
+	fmt.Fprintln(w, "# TYPE neurodb_memtable_records gauge")
+	fmt.Fprintf(w, "neurodb_memtable_records %.0f\n", numberToFloat64(stats["memtable_record_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_learned_indexes Current learned indexes.")
+	fmt.Fprintln(w, "# TYPE neurodb_learned_indexes gauge")
+	fmt.Fprintf(w, "neurodb_learned_indexes %.0f\n", numberToFloat64(stats["learned_indexes_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_sstable_files Current SSTable files.")
+	fmt.Fprintln(w, "# TYPE neurodb_sstable_files gauge")
+	fmt.Fprintf(w, "neurodb_sstable_files %.0f\n", numberToFloat64(stats["sstable_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_l0_sstable_files Current L0 SSTable files.")
+	fmt.Fprintln(w, "# TYPE neurodb_l0_sstable_files gauge")
+	fmt.Fprintf(w, "neurodb_l0_sstable_files %.0f\n", numberToFloat64(stats["l0_sstable_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_l1_sstable_files Current L1 SSTable files.")
+	fmt.Fprintln(w, "# TYPE neurodb_l1_sstable_files gauge")
+	fmt.Fprintf(w, "neurodb_l1_sstable_files %.0f\n", numberToFloat64(stats["l1_sstable_count"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_pending_writes Current pending WAL writes.")
+	fmt.Fprintln(w, "# TYPE neurodb_pending_writes gauge")
+	fmt.Fprintf(w, "neurodb_pending_writes %.0f\n", numberToFloat64(stats["pending_writes"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_wal_size_bytes Current WAL file size in bytes.")
+	fmt.Fprintln(w, "# TYPE neurodb_wal_size_bytes gauge")
+	fmt.Fprintf(w, "neurodb_wal_size_bytes %.0f\n", numberToFloat64(stats["wal_size_bytes"]))
+
+	fmt.Fprintln(w, "# HELP neurodb_rw_ratio Read/write ratio.")
+	fmt.Fprintln(w, "# TYPE neurodb_rw_ratio gauge")
+	fmt.Fprintf(w, "neurodb_rw_ratio %f\n", numberToFloat64(stats["rw_ratio"]))
 }
 
 func (s *Server) handleDel(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +352,52 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("Database Reset Successful"))
 }
 
+func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	records := s.store.Scan(common.KeyType(math.MinInt64), common.KeyType(math.MaxInt64))
+	resp := backupPayload{
+		GeneratedAt: time.Now().UTC(),
+		RecordCount: len(records),
+		Records:     records,
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req backupPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid body", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.Reset(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, rec := range req.Records {
+		s.store.Put(rec.Key, rec.Value)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":         "ok",
+		"restored_count": len(req.Records),
+	})
+}
+
 func (s *Server) handleMoCapPut(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method != http.MethodPost {
@@ -337,10 +462,16 @@ func (s *Server) handleSQL(w http.ResponseWriter, r *http.Request) {
 	records := s.store.Scan(common.KeyType(start), common.KeyType(end))
 	rows := make([]map[string]interface{}, 0, len(records))
 	for _, rec := range records {
+		if !stmt.MatchID(int64(rec.Key)) {
+			continue
+		}
 		rows = append(rows, map[string]interface{}{
 			"id":   rec.Key,
 			"data": string(rec.Value),
 		})
+		if stmt.Limit >= 0 && len(rows) >= stmt.Limit {
+			break
+		}
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"table": stmt.Table,
