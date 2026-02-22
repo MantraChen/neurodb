@@ -89,4 +89,13 @@ func applyStorageDefaults(cfg *Config) {
 	if cfg.Storage.WalBatchSize <= 0 {
 		cfg.Storage.WalBatchSize = 500
 	}
+	if cfg.System.ShardCount <= 0 {
+		cfg.System.ShardCount = 16
+	}
+	if cfg.System.BloomSize == 0 {
+		cfg.System.BloomSize = 100000
+	}
+	if cfg.System.BloomFalseProb <= 0 || cfg.System.BloomFalseProb >= 1 {
+		cfg.System.BloomFalseProb = 0.01
+	}
 }
