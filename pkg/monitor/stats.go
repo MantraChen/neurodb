@@ -38,3 +38,11 @@ func (ws *WorkloadStats) GetReadWriteRatio() float64 {
 	}
 	return float64(reads) / float64(writes)
 }
+
+
+func (ws *WorkloadStats) Snapshot() (reads, writes, hits uint64) {
+	reads = atomic.LoadUint64(&ws.ReadCount)
+	writes = atomic.LoadUint64(&ws.WriteCount)
+	hits = atomic.LoadUint64(&ws.HitCount)
+	return
+}

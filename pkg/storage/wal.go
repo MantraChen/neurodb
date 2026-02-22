@@ -78,9 +78,33 @@ func (w *WAL) Close() error {
 func (w *WAL) Truncate() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.file.Truncate(0)
-	w.file.Seek(0, 0)
-	return nil
+	if err := w.buf.Flush(); err != nil {
+		return err
+	}
+	path := w.file.Name()
+	if err := w.file.Close(); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	w.file = f
+	w.buf = bufio.NewWriter(f)
+	return w.file.Sync()
+}
+
+func (w *WAL) Size() (int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.buf.Flush(); err != nil {
+		return 0, err
+	}
+	st, err := w.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return st.Size(), nil
 }
 
 type WALIterator struct {
@@ -116,6 +140,7 @@ func (it *WALIterator) Next() (common.Record, error) {
 
 	checksum := crc32.NewIEEE()
 	checksum.Write(header[12:])
+	checksum.Write(value)
 	if checksum.Sum32() != storedCRC {
 		return common.Record{}, errors.New("wal: crc mismatch")
 	}

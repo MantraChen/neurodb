@@ -5,6 +5,7 @@
 *.db.wal
 *.wal
 *.sst
+*.li
 
 # Index 训练模型文件
 *.index

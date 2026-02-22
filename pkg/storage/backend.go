@@ -13,6 +13,7 @@ type Backend interface {
 	LoadAll() ([]common.Record, error)
 	Close()
 	Truncate() error
+	Size() (int64, error)
 }
 
 type DiskBackend struct {
@@ -83,4 +84,8 @@ func (d *DiskBackend) Close() {
 
 func (d *DiskBackend) Truncate() error {
 	return d.wal.Truncate()
+}
+
+func (d *DiskBackend) Size() (int64, error) {
+	return d.wal.Size()
 }

@@ -135,11 +135,13 @@ type Iterator struct {
 
 func (t *SSTable) NewIterator() *Iterator {
 	f, err := os.Open(t.Filename)
+	if err != nil {
+		return &Iterator{file: nil, fileSize: t.fileSize, err: err, valid: false}
+	}
 	return &Iterator{
 		file:     f,
 		fileSize: t.fileSize,
-		err:      err,
-		valid:    err == nil,
+		valid:    true,
 	}
 }
 
@@ -182,4 +184,9 @@ func (it *Iterator) Next() bool {
 func (it *Iterator) Key() common.KeyType     { return it.currentKey }
 func (it *Iterator) Value() common.ValueType { return it.currentVal }
 func (it *Iterator) Valid() bool             { return it.valid }
-func (it *Iterator) Close()                  { it.file.Close() }
+func (it *Iterator) Close() {
+	if it.file != nil {
+		it.file.Close()
+		it.file = nil
+	}
+}
