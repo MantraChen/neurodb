@@ -71,6 +71,7 @@ func (s *Server) RegisterRoutes() {
 	http.HandleFunc("/api/mocap/put", recoverMiddleware(s.handleMoCapPut))
 	http.HandleFunc("/api/scan", recoverMiddleware(s.handleScan))
 	http.HandleFunc("/api/heatmap", recoverMiddleware(s.handleHeatmap))
+	http.HandleFunc("/api/train-rmi", recoverMiddleware(s.handleTrainRMI))
 	http.HandleFunc("/api/sql", recoverMiddleware(s.handleSQL))
 
 	staticDir := resolveStaticDir()
@@ -188,6 +189,27 @@ func (s *Server) handleDel(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Deleted"))
+}
+
+func (s *Server) handleTrainRMI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
+		return
+	}
+	shardID := -1
+	if s := r.URL.Query().Get("shard"); s != "" {
+		if id, err := strconv.Atoi(s); err == nil && id >= 0 {
+			shardID = id
+		}
+	}
+	if err := s.store.TriggerPythonTraining(shardID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "message": "Python RMI training completed; refresh heatmap to see piecewise errors."})
 }
 
 func (s *Server) handleHeatmap(w http.ResponseWriter, r *http.Request) {

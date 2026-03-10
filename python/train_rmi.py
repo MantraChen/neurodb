@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-RMI training script: reads key data (CSV or pipe) exported by Go, trains 2-layer RMI, outputs .li weights.
-Invoked asynchronously by NeuroDB Go after compaction (Go-Python dual-engine).
+RMI training script: true 2-layer Recursive Model Index.
+- Root: predicts bucket index (which leaf), not global position.
+- Leaves: each predicts local position (0..len(bucket)-1) within segment → tiny error.
+Exports per-leaf [min_err, max_err] so Go fallback search is over a small range.
 """
 import argparse
 import json
@@ -12,58 +14,94 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 
-def train_rmi(keys: np.ndarray, fanout: int = 1000):
+def train_rmi(keys: np.ndarray, fanout: int = 256):
     """
-    Two-layer RMI: root model + fanout leaf linear models.
-    Returns serializable weight dict (slope, intercept, MinErr, MaxErr).
+    True RMI:
+    - Root: key -> bucket_index (0..fanout-1). Trained so routing is learned.
+    - Leaves: per-bucket key -> local_position (0 to bucket_size-1).
+    - Export bucket_starts (global start index per bucket) and per_leaf_min_err, per_leaf_max_err.
     """
     keys = np.asarray(keys, dtype=np.int64).flatten()
     keys = np.sort(keys)
     n = len(keys)
     if n == 0:
-        return {"fanout": fanout, "root": {"slope": 0.0, "intercept": 0.0}, "leaves": [], "min_err": 0, "max_err": 0}
+        return {
+            "fanout": fanout,
+            "global_min": 0,
+            "global_max": 0,
+            "root": {"slope": 0.0, "intercept": 0.0},
+            "leaves": [],
+            "bucket_starts": [],
+            "per_leaf_min_err": [],
+            "per_leaf_max_err": [],
+            "min_err": 0,
+            "max_err": 0,
+            "key_count": 0,
+        }
 
-    # Layer 1: global root model key -> position
-    root = LinearRegression().fit(keys.reshape(-1, 1), np.arange(n, dtype=np.float64))
+    key_min, key_max = int(keys[0]), int(keys[-1])
+    key_range = max(key_max - key_min, 1)
+
+    # Partition keys into buckets by key range (deterministic)
+    bucket_indices = np.clip(
+        ((keys - key_min) / key_range * fanout).astype(int), 0, fanout - 1
+    )
+
+    # Root model: key -> bucket index (0..fanout-1)
+    root = LinearRegression().fit(
+        keys.reshape(-1, 1), bucket_indices.astype(np.float64)
+    )
     root_slope = float(root.coef_[0])
     root_intercept = float(root.intercept_)
 
-    # Partition into buckets by key range
-    key_min, key_max = int(keys[0]), int(keys[-1])
-    key_range = max(key_max - key_min, 1)
-    bucket_size = key_range / fanout
+    # Build per-bucket key lists and local positions (0, 1, 2, ... within bucket)
+    bucket_keys = [[] for _ in range(fanout)]
+    bucket_local_pos = [[] for _ in range(fanout)]
+    for i, key in enumerate(keys):
+        b = bucket_indices[i]
+        bucket_keys[b].append(key)
+        bucket_local_pos[b].append(len(bucket_keys[b]) - 1)
+
+    bucket_starts = []
+    pos = 0
+    for b in range(fanout):
+        bucket_starts.append(pos)
+        pos += len(bucket_keys[b])
 
     leaves = []
-    positions = np.arange(n)
+    per_leaf_min_err = []
+    per_leaf_max_err = []
 
     for b in range(fanout):
-        lo = key_min + b * bucket_size
-        hi = key_min + (b + 1) * bucket_size
-        if b == fanout - 1:
-            hi = key_max + 1
-        mask = (keys >= lo) & (keys < hi)
-        if not np.any(mask):
+        bk = np.array(bucket_keys[b]) if bucket_keys[b] else np.zeros(0, dtype=np.int64)
+        bp = np.array(bucket_local_pos[b]) if bucket_local_pos[b] else np.zeros(0, dtype=np.int64)
+        if len(bk) == 0:
             leaves.append({"slope": 0.0, "intercept": 0.0})
+            per_leaf_min_err.append(0)
+            per_leaf_max_err.append(0)
             continue
-        sub_keys = keys[mask]
-        sub_pos = positions[mask]
-        leaf = LinearRegression().fit(sub_keys.reshape(-1, 1), sub_pos)
+        leaf = LinearRegression().fit(bk.reshape(-1, 1), bp.astype(np.float64))
         leaves.append({
             "slope": float(leaf.coef_[0]),
             "intercept": float(leaf.intercept_),
         })
+        # Per-leaf error: real local pos - predicted local pos
+        pred_local = leaf.predict(bk.reshape(-1, 1))
+        errs = bp - np.round(pred_local).astype(int)
+        per_leaf_min_err.append(int(np.min(errs)))
+        per_leaf_max_err.append(int(np.max(errs)))
 
-    # Compute error band: for each key use root to pick bucket + leaf predict; err = real_pos - pred_pos
+    # Global error bounds (for backward compat and CBO)
     min_err, max_err = 0, 0
     for i, key in enumerate(keys):
         key_f = float(key)
-        bucket_idx = int((key_f - key_min) / key_range * fanout)
-        bucket_idx = min(bucket_idx, fanout - 1)
-        if bucket_idx < 0:
-            bucket_idx = 0
-        leaf = leaves[bucket_idx]
-        pred_pos = leaf["slope"] * key_f + leaf["intercept"]
-        err = i - int(round(pred_pos))
+        b = bucket_indices[i]
+        if b >= len(leaves):
+            continue
+        leaf = leaves[b]
+        local_pred = leaf["slope"] * key_f + leaf["intercept"]
+        global_pred = bucket_starts[b] + int(round(local_pred))
+        err = i - global_pred
         min_err = min(min_err, err)
         max_err = max(max_err, err)
 
@@ -73,6 +111,9 @@ def train_rmi(keys: np.ndarray, fanout: int = 1000):
         "global_max": int(key_max),
         "root": {"slope": root_slope, "intercept": root_intercept},
         "leaves": leaves,
+        "bucket_starts": bucket_starts,
+        "per_leaf_min_err": per_leaf_min_err,
+        "per_leaf_max_err": per_leaf_max_err,
         "min_err": int(min_err),
         "max_err": int(max_err),
         "key_count": n,
@@ -80,23 +121,21 @@ def train_rmi(keys: np.ndarray, fanout: int = 1000):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Train RMI from key list, output .li (JSON or binary)")
-    ap.add_argument("--input", required=True, help="Path to CSV/JSON with one key per line or JSON array")
-    ap.add_argument("--output", required=True, help="Output path for .li weights (JSON)")
-    ap.add_argument("--fanout", type=int, default=1000, help="RMI fanout (buckets)")
-    ap.add_argument("--format", choices=["json", "csv"], default="csv", help="Input format: csv (one key per line) or json (array)")
+    ap = argparse.ArgumentParser(description="Train 2-layer RMI (root->bucket, leaves->local pos), output .li JSON")
+    ap.add_argument("--input", required=True, help="Path to CSV (one key per line) or - for stdin")
+    ap.add_argument("--output", required=True, help="Output .li path (JSON)")
+    ap.add_argument("--fanout", type=int, default=256, help="Number of leaf segments (e.g. 256)")
+    ap.add_argument("--format", choices=["json", "csv"], default="csv", help="Input format")
     args = ap.parse_args()
 
-    path = Path(args.input)
-    if not path.exists():
-        # Allow reading from stdin
-        if args.input == "-":
-            lines = sys.stdin.read().strip().splitlines()
-            keys = np.array([int(l.strip().split(",")[0]) for l in lines if l.strip()], dtype=np.int64)
-        else:
+    if args.input == "-":
+        lines = sys.stdin.read().strip().splitlines()
+        keys = np.array([int(l.strip().split(",")[0]) for l in lines if l.strip()], dtype=np.int64)
+    else:
+        path = Path(args.input)
+        if not path.exists():
             print(f"Error: input file not found: {args.input}", file=sys.stderr)
             sys.exit(1)
-    else:
         with open(path) as f:
             if args.format == "csv":
                 keys = np.array([int(line.strip().split(",")[0]) for line in f if line.strip()], dtype=np.int64)
@@ -113,7 +152,10 @@ def main():
     with open(out_path, "w") as f:
         json.dump(model, f, indent=0)
 
-    print(f"Wrote RMI to {out_path} (key_count={model['key_count']}, min_err={model['min_err']}, max_err={model['max_err']})")
+    print(
+        f"Wrote RMI to {out_path} (key_count={model['key_count']}, "
+        f"global_err=[{model['min_err']},{model['max_err']}], fanout={model['fanout']})"
+    )
 
 
 if __name__ == "__main__":

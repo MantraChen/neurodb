@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"neurodb/pkg/common"
 	"neurodb/pkg/model"
+	indexlearned "neurodb/pkg/index/learned"
 	"os"
 	"sort"
 	"time"
@@ -16,6 +17,20 @@ type DiagnosticPoint struct {
 	PredictedPos int
 	Error        int
 }
+
+// LearnedIndexInterface is implemented by both Go-trained and Python-backed indexes for Get/Scan/heatmap.
+type LearnedIndexInterface interface {
+	Get(key common.KeyType) (common.ValueType, bool)
+	Scan(lowKey, highKey common.KeyType) []common.Record
+	ExportDiagnostics() []DiagnosticPoint
+	Predict(key int64) int
+	ErrorBound() (minErr, maxErr int)
+	KeyCount() int
+	GetAllRecords() []common.Record
+}
+
+// Ensure *LearnedIndex implements LearnedIndexInterface.
+var _ LearnedIndexInterface = (*LearnedIndex)(nil)
 
 type LearnedIndex struct {
 	Records []common.Record // raw data
@@ -108,15 +123,22 @@ func (li *LearnedIndex) KeyCount() int {
 	return len(li.Records)
 }
 
+// PredictWithBounds returns (position, minErr, maxErr) for tight fallback search (per-leaf when available).
+func (li *LearnedIndex) PredictWithBounds(key common.KeyType) (pos int, minE, maxE int) {
+	if li.Model == nil {
+		return 0, li.MinErr, li.MaxErr
+	}
+	return li.Model.Predict(key), li.MinErr, li.MaxErr
+}
+
 func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	if len(li.Records) == 0 {
 		return nil, false
 	}
 
-	predictedPos := li.Model.Predict(key)
-
-	low := predictedPos + li.MinErr
-	high := predictedPos + li.MaxErr
+	predictedPos, minE, maxE := li.PredictWithBounds(key)
+	low := predictedPos + minE
+	high := predictedPos + maxE
 
 	if low < 0 {
 		low = 0
@@ -128,6 +150,7 @@ func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 		return nil, false
 	}
 
+	// Tight range: linear scan when very small, else binary search
 	if high-low < 16 {
 		for i := low; i <= high; i++ {
 			if li.Records[i].Key == key {
@@ -290,4 +313,174 @@ func Load(filename string) (*LearnedIndex, error) {
 		return nil, err
 	}
 	return &li, nil
+}
+
+// PythonBackedIndex uses a Python-trained RMI (root->bucket, leaves->local pos) and merged records for Get/Scan/heatmap.
+var _ LearnedIndexInterface = (*PythonBackedIndex)(nil)
+
+type PythonBackedIndex struct {
+	Model   *indexlearned.RMILocalModel
+	Records []common.Record
+}
+
+// NewPythonBackedIndex builds an index that uses the Python model and per-leaf error bounds for tight fallback.
+func NewPythonBackedIndex(model *indexlearned.RMILocalModel, records []common.Record) *PythonBackedIndex {
+	return &PythonBackedIndex{Model: model, Records: records}
+}
+
+func (p *PythonBackedIndex) Get(key common.KeyType) (common.ValueType, bool) {
+	if p.Model == nil || len(p.Records) == 0 {
+		return nil, false
+	}
+	pos, minE, maxE := p.Model.PredictWithBounds(int64(key))
+	low := pos + minE
+	high := pos + maxE
+	if low < 0 {
+		low = 0
+	}
+	if high >= len(p.Records) {
+		high = len(p.Records) - 1
+	}
+	if low > high {
+		return nil, false
+	}
+	if high-low < 16 {
+		for i := low; i <= high; i++ {
+			if p.Records[i].Key == key {
+				return p.Records[i].Value, true
+			}
+			if p.Records[i].Key > key {
+				return nil, false
+			}
+		}
+		return nil, false
+	}
+	slice := p.Records[low : high+1]
+	idx := sort.Search(len(slice), func(i int) bool { return slice[i].Key >= key })
+	if idx < len(slice) && slice[idx].Key == key {
+		return slice[idx].Value, true
+	}
+	return nil, false
+}
+
+func (p *PythonBackedIndex) Scan(lowKey, highKey common.KeyType) []common.Record {
+	var res []common.Record
+	if len(p.Records) == 0 {
+		return res
+	}
+	pos, minE, _ := p.Model.PredictWithBounds(int64(lowKey))
+	startIdx := pos + minE
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx >= len(p.Records) {
+		startIdx = len(p.Records) - 1
+	}
+	for startIdx > 0 && p.Records[startIdx].Key >= lowKey {
+		startIdx--
+	}
+	for startIdx < len(p.Records) && p.Records[startIdx].Key < lowKey {
+		startIdx++
+	}
+	for i := startIdx; i < len(p.Records); i++ {
+		rec := p.Records[i]
+		if rec.Key > highKey {
+			break
+		}
+		if rec.Key >= lowKey {
+			res = append(res, rec)
+		}
+	}
+	return res
+}
+
+func (p *PythonBackedIndex) ExportDiagnostics() []DiagnosticPoint {
+	if p.Model == nil || len(p.Records) == 0 {
+		return nil
+	}
+	step := 1
+	if len(p.Records) > 5000 {
+		step = len(p.Records) / 5000
+	}
+	results := make([]DiagnosticPoint, 0, len(p.Records)/step)
+	for i := 0; i < len(p.Records); i += step {
+		rec := p.Records[i]
+		pred, _, _ := p.Model.PredictWithBounds(int64(rec.Key))
+		results = append(results, DiagnosticPoint{
+			Key:          int64(rec.Key),
+			RealPos:      i,
+			PredictedPos: pred,
+			Error:        i - pred,
+		})
+	}
+	return results
+}
+
+func (p *PythonBackedIndex) Predict(key int64) int {
+	if p.Model == nil {
+		return 0
+	}
+	return p.Model.Predict(key)
+}
+
+func (p *PythonBackedIndex) ErrorBound() (minErr, maxErr int) {
+	if p.Model == nil {
+		return 0, 0
+	}
+	return p.Model.ErrorBound()
+}
+
+func (p *PythonBackedIndex) KeyCount() int {
+	return len(p.Records)
+}
+
+func (p *PythonBackedIndex) GetAllRecords() []common.Record {
+	return p.Records
+}
+
+// BenchmarkInternal runs B-Tree vs RMI (PredictWithBounds + binary search) for dashboard; same contract as LearnedIndex.
+func (p *PythonBackedIndex) BenchmarkInternal(iterations int) (float64, float64, error) {
+	if p.Model == nil || len(p.Records) == 0 {
+		return 0, 0, nil
+	}
+	keys := make([]common.KeyType, iterations)
+	for i := 0; i < iterations; i++ {
+		idx := rand.Intn(len(p.Records))
+		keys[i] = p.Records[idx].Key
+	}
+	// B-Tree (binary search over full array)
+	startBin := time.Now()
+	for _, key := range keys {
+		sort.Search(len(p.Records), func(i int) bool {
+			return p.Records[i].Key >= key
+		})
+	}
+	avgBin := float64(time.Since(startBin).Nanoseconds()) / float64(iterations)
+	// RMI: PredictWithBounds + search in [low, high]
+	startRMI := time.Now()
+	for _, key := range keys {
+		pos, minE, maxE := p.Model.PredictWithBounds(int64(key))
+		low, high := pos+minE, pos+maxE
+		if low < 0 {
+			low = 0
+		}
+		if high >= len(p.Records) {
+			high = len(p.Records) - 1
+		}
+		if low > high {
+			continue
+		}
+		if high-low < 16 {
+			for i := low; i <= high; i++ {
+				if p.Records[i].Key >= key {
+					break
+				}
+			}
+		} else {
+			slice := p.Records[low : high+1]
+			sort.Search(len(slice), func(i int) bool { return slice[i].Key >= key })
+		}
+	}
+	avgRMI := float64(time.Since(startRMI).Nanoseconds()) / float64(iterations)
+	return avgBin, avgRMI, nil
 }

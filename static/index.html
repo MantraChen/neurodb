@@ -222,7 +222,7 @@
         <div class="metric-card">
             <div class="metric-label">Learned Index</div>
             <div class="metric-value" id="modelVal">0</div>
-            <div class="metric-sub">Segments</div>
+            <div class="metric-sub">Indexes (1 per shard)</div>
         </div>
         <div class="metric-card">
             <div class="metric-label">Active Shards</div>
@@ -336,9 +336,10 @@
             </div>
 
             <div class="panel">
-                <div class="panel-title">
-                    Learned Index Error Heatmap
-                    <button onclick="loadHeatmap()" style="font-size: 10px; padding: 2px 8px; margin: 0; width: auto;">Refresh</button>
+                <div class="panel-title">Learned Index Error Heatmap</div>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;">
+                    <button onclick="loadHeatmap()" class="btn-primary" style="font-size: 11px; padding: 6px 12px;">Refresh</button>
+                    <button onclick="trainRMI()" id="btnTrainRMI" class="btn-primary" style="font-size: 11px; padding: 6px 12px; background: var(--accent);">Train RMI (Python)</button>
                 </div>
                 <canvas id="heatCanvas" width="800" height="200"></canvas>
                 <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px; text-align: center;">
@@ -542,6 +543,25 @@
         }
 
         // --- Visualization & Benchmarks ---
+        async function trainRMI() {
+            const btn = document.getElementById('btnTrainRMI');
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.innerText = 'Training...';
+            log('Triggering Python RMI training (all shards with data)...', 'info');
+            try {
+                const res = await fetch('/api/train-rmi', { method: 'POST' });
+                const d = await res.json();
+                if (d.error) {
+                    log('Train RMI failed: ' + d.error, 'err');
+                    return;
+                }
+                log(d.message || 'RMI training done. Refreshing heatmap.', 'ok');
+                setTimeout(function(){ loadHeatmap(); }, 300);
+            } catch(e) { log('Train RMI: ' + e, 'err'); }
+            finally { btn.disabled = false; btn.innerText = 'Train RMI (Python)'; }
+        }
+
         async function runBenchmark() {
             const btn = document.getElementById('btnBench');
             const originalText = btn.innerText;
@@ -549,18 +569,18 @@
             try {
                 const res = await fetch('/api/benchmark');
                 const d = await res.json();
-                
+                if (d.error) {
+                    log('Benchmark: ' + d.error, 'err');
+                    return;
+                }
                 document.getElementById('valB').innerText = d.btree_avg_ns;
                 document.getElementById('valAI').innerText = d.ai_avg_ns;
                 document.getElementById('speedupVal').innerText = d.speedup + " Speedup";
-                
-                const valB = parseFloat(d.btree_avg_ns);
-                const valAI = parseFloat(d.ai_avg_ns);
-                const max = Math.max(valB, valAI);
-                
+                const valB = parseFloat(String(d.btree_avg_ns).replace(/\s*ns$/, ''));
+                const valAI = parseFloat(String(d.ai_avg_ns).replace(/\s*ns$/, ''));
+                const max = Math.max(valB, valAI) || 1;
                 document.getElementById('barB').style.width = (valB/max*100) + "%";
                 document.getElementById('barAI').style.width = (valAI/max*100) + "%";
-                
                 log(`Benchmark: ${d.speedup} speedup achieved.`, 'sys');
             } catch(e) { log(e, 'err'); }
             finally { btn.innerHTML = originalText; btn.disabled = false; }
@@ -617,7 +637,7 @@
                     else if(errMag < 20) ctx.fillStyle = '#d29922'; 
                     else ctx.fillStyle = '#da3633';                 
 
-                    ctx.fillRect(x, y, 2, 2);   x
+                    ctx.fillRect(x, y, 2, 2);
                 });
                 log(`Heatmap updated (${data.length} pts, Scale: 1:${scaleFactor.toFixed(2)})`, 'ok');
 

@@ -29,7 +29,7 @@ type Shard struct {
 	id             int
 	mutex          sync.RWMutex
 	mutableMem     *memory.MemTable
-	learnedIndexes []*corelearned.LearnedIndex
+	learnedIndexes []corelearned.LearnedIndexInterface
 	cboModel       optimizer.RMIEstimator
 	l0SSTables     []*sstable.SSTable
 	l1SSTables     []*sstable.SSTable
@@ -42,7 +42,7 @@ func NewShard(id int, bloomSize uint, bloomP float64) *Shard {
 	return &Shard{
 		id:             id,
 		mutableMem:     memory.NewMemTable(32),
-		learnedIndexes: make([]*corelearned.LearnedIndex, 0),
+		learnedIndexes: make([]corelearned.LearnedIndexInterface, 0),
 		l0SSTables:     make([]*sstable.SSTable, 0),
 		l1SSTables:     make([]*sstable.SSTable, 0),
 		sstables:       make([]*sstable.SSTable, 0),
@@ -116,7 +116,7 @@ func (shard *Shard) RMIEstimator() (optimizer.RMIEstimator, bool) {
 	shard.mutex.RLock()
 	defer shard.mutex.RUnlock()
 	if len(shard.learnedIndexes) > 0 {
-		return shard.learnedIndexes[0], true
+		return shard.learnedIndexes[0], true // both *LearnedIndex and *PythonBackedIndex implement RMIEstimator
 	}
 	if shard.cboModel != nil {
 		return shard.cboModel, true
@@ -259,7 +259,7 @@ func (hs *HybridStore) rebuildLearnedIndexFromSSTables(shard *Shard) {
 
 	if len(tables) == 0 {
 		shard.mutex.Lock()
-		shard.learnedIndexes = make([]*corelearned.LearnedIndex, 0)
+		shard.learnedIndexes = make([]corelearned.LearnedIndexInterface, 0)
 		shard.mutex.Unlock()
 		return
 	}
@@ -279,7 +279,7 @@ func (hs *HybridStore) rebuildLearnedIndexFromSSTables(shard *Shard) {
 
 	if len(latestByKey) == 0 {
 		shard.mutex.Lock()
-		shard.learnedIndexes = make([]*corelearned.LearnedIndex, 0)
+		shard.learnedIndexes = make([]corelearned.LearnedIndexInterface, 0)
 		shard.mutex.Unlock()
 		return
 	}
@@ -291,7 +291,7 @@ func (hs *HybridStore) rebuildLearnedIndexFromSSTables(shard *Shard) {
 
 	rebuilt := corelearned.Build(records)
 	shard.mutex.Lock()
-	shard.learnedIndexes = []*corelearned.LearnedIndex{rebuilt}
+	shard.learnedIndexes = []corelearned.LearnedIndexInterface{rebuilt}
 	shard.mutex.Unlock()
 	hs.persistLearnedIndex(shard, rebuilt)
 }
@@ -336,8 +336,11 @@ func (hs *HybridStore) learnedIndexPath(shardID int, sig string) string {
 }
 
 func (hs *HybridStore) persistLearnedIndex(shard *Shard, li *corelearned.LearnedIndex) {
+	if li == nil {
+		return
+	}
 	sig := hs.learnedIndexSignature(shard)
-	if sig == "" || li == nil {
+	if sig == "" {
 		return
 	}
 	path := hs.learnedIndexPath(shard.id, sig)
@@ -365,27 +368,42 @@ func (hs *HybridStore) tryLoadPersistedLearnedIndex(shard *Shard) bool {
 		return false
 	}
 	shard.mutex.Lock()
-	shard.learnedIndexes = []*corelearned.LearnedIndex{li}
+	shard.learnedIndexes = []corelearned.LearnedIndexInterface{li}
 	shard.mutex.Unlock()
 	return true
 }
 
-// extractKeysToCSV extracts all keys from an SSTable file into a temp CSV; returns path.
-func (hs *HybridStore) extractKeysToCSV(sstPath string) (string, error) {
-	sst, err := sstable.Open(sstPath)
-	if err != nil {
-		return "", err
+// buildMergedRecordsFromShard builds merged, deduplicated records from all shard SSTables (caller must hold shard RLock).
+func (hs *HybridStore) buildMergedRecordsFromShard(shard *Shard) []common.Record {
+	latestByKey := make(map[common.KeyType]common.ValueType)
+	for i := len(shard.sstables) - 1; i >= 0; i-- {
+		it := shard.sstables[i].NewIterator()
+		for it.Next() {
+			k := it.Key()
+			if _, exists := latestByKey[k]; exists {
+				continue
+			}
+			latestByKey[k] = append([]byte(nil), it.Value()...)
+		}
+		it.Close()
 	}
-	defer sst.Close()
+	records := make([]common.Record, 0, len(latestByKey))
+	for key, val := range latestByKey {
+		records = append(records, common.Record{Key: key, Value: val})
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].Key < records[j].Key })
+	return records
+}
+
+// extractKeysToCSV writes merged keys from the shard (one per line) to a temp CSV; caller holds shard RLock.
+func (hs *HybridStore) extractKeysToCSVFromRecords(records []common.Record) (string, error) {
 	f, err := os.CreateTemp("", "neurodb_keys_*.csv")
 	if err != nil {
 		return "", err
 	}
-	it := sst.NewIterator()
-	for it.Next() {
-		fmt.Fprintf(f, "%d\n", it.Key())
+	for _, r := range records {
+		fmt.Fprintf(f, "%d\n", r.Key)
 	}
-	it.Close()
 	if err := f.Close(); err != nil {
 		os.Remove(f.Name())
 		return "", err
@@ -393,12 +411,18 @@ func (hs *HybridStore) extractKeysToCSV(sstPath string) (string, error) {
 	return f.Name(), nil
 }
 
-// triggerPythonTraining invokes Python sidecar to train RMI asynchronously, then hot-reloads .li.
-func (hs *HybridStore) triggerPythonTraining(shard *Shard, newSSTPath string) {
-	keysPath, err := hs.extractKeysToCSV(newSSTPath)
+// triggerPythonTraining builds merged records from shard, exports keys to CSV, runs Python 2-layer RMI, then hot-reloads. Returns error on failure.
+func (hs *HybridStore) triggerPythonTraining(shard *Shard, _ string) error {
+	shard.mutex.RLock()
+	records := hs.buildMergedRecordsFromShard(shard)
+	shard.mutex.RUnlock()
+	if len(records) == 0 {
+		return nil
+	}
+	keysPath, err := hs.extractKeysToCSVFromRecords(records)
 	if err != nil {
 		log.Printf("[Python RMI] extractKeys failed: %v", err)
-		return
+		return err
 	}
 	defer os.Remove(keysPath)
 
@@ -407,26 +431,39 @@ func (hs *HybridStore) triggerPythonTraining(shard *Shard, newSSTPath string) {
 	if scriptPath == "" {
 		scriptPath = "python/train_rmi.py"
 	}
-	cmd := exec.Command("python3", scriptPath, "--input", keysPath, "--output", outLiPath)
+	cmd := exec.Command("python3", scriptPath, "--input", keysPath, "--output", outLiPath, "--fanout", "256")
 	cmd.Dir = filepath.Join(hs.conf.Storage.Path, "..")
+	var stderrBuf strings.Builder
+	cmd.Stderr = &stderrBuf
 	if err := cmd.Run(); err != nil {
-		log.Printf("[Python RMI] train failed: %v", err)
-		return
+		errMsg := strings.TrimSpace(stderrBuf.String())
+		if errMsg != "" {
+			log.Printf("[Python RMI] train failed: %v | stderr: %s", err, errMsg)
+		} else {
+			log.Printf("[Python RMI] train failed: %v", err)
+		}
+		return err
 	}
-	hs.hotReloadLearnedIndex(shard, outLiPath)
+	return hs.hotReloadLearnedIndex(shard, outLiPath)
 }
 
-// hotReloadLearnedIndex loads Python-output .li (JSON) and sets it as the shard's CBO model.
-func (hs *HybridStore) hotReloadLearnedIndex(shard *Shard, liPath string) {
+// hotReloadLearnedIndex loads Python .li, builds merged records from shard, and replaces learnedIndexes with PythonBackedIndex. Returns error on load failure.
+func (hs *HybridStore) hotReloadLearnedIndex(shard *Shard, liPath string) error {
 	m, err := indexlearned.LoadFromJSON(liPath)
 	if err != nil {
 		log.Printf("[Python RMI] load %s failed: %v", liPath, err)
-		return
+		return err
 	}
+	shard.mutex.RLock()
+	records := hs.buildMergedRecordsFromShard(shard)
+	shard.mutex.RUnlock()
+	pyIdx := corelearned.NewPythonBackedIndex(m, records)
 	shard.mutex.Lock()
+	shard.learnedIndexes = []corelearned.LearnedIndexInterface{pyIdx}
 	shard.cboModel = m
 	shard.mutex.Unlock()
-	log.Printf("[Python RMI] hot-reloaded shard %d from %s", shard.id, liPath)
+	log.Printf("[Python RMI] hot-reloaded shard %d (piecewise RMI, %d records)", shard.id, len(records))
+	return nil
 }
 
 func (hs *HybridStore) compactShard(shard *Shard) {
@@ -526,7 +563,11 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 	shard.mutex.Unlock()
 
 	hs.rebuildLearnedIndexFromSSTables(shard)
-	go hs.triggerPythonTraining(shard, outPath)
+	go func() {
+		if err := hs.triggerPythonTraining(shard, outPath); err != nil {
+			log.Printf("[Python RMI] background train failed: %v", err)
+		}
+	}()
 
 	log.Printf("[Compaction] Shard %d: Merged %d -> 1 files. Disk cleaned.", shard.id, len(inputTables))
 	for _, old := range inputTables {
@@ -682,7 +723,9 @@ func (hs *HybridStore) recoverFromWAL() int {
 		go func(idx int, data []common.Record) {
 			defer wg.Done()
 			li := corelearned.Build(data)
+			hs.shards[idx].mutex.Lock()
 			hs.shards[idx].learnedIndexes = append(hs.shards[idx].learnedIndexes, li)
+			hs.shards[idx].mutex.Unlock()
 		}(i, shardData[i])
 	}
 	wg.Wait()
@@ -744,7 +787,7 @@ func (hs *HybridStore) checkpointAndTruncateWAL() error {
 		shard.l1SSTables = append(shard.l1SSTables, newSST)
 		shard.rebuildSSTableViewLocked()
 		li := corelearned.Build(records)
-		shard.learnedIndexes = []*corelearned.LearnedIndex{li}
+		shard.learnedIndexes = []corelearned.LearnedIndexInterface{li}
 		shard.mutex.Unlock()
 		hs.persistLearnedIndex(shard, li)
 		checkpointed++
@@ -923,7 +966,7 @@ func (hs *HybridStore) Reset() error {
 		}
 
 		shard.mutableMem = memory.NewMemTable(32)
-		shard.learnedIndexes = make([]*corelearned.LearnedIndex, 0)
+		shard.learnedIndexes = make([]corelearned.LearnedIndexInterface, 0)
 		shard.l0SSTables = make([]*sstable.SSTable, 0)
 		shard.l1SSTables = make([]*sstable.SSTable, 0)
 		shard.sstables = make([]*sstable.SSTable, 0)
@@ -953,5 +996,37 @@ func (hs *HybridStore) BenchmarkAlgo(iterations int) (float64, float64, error) {
 	if len(hs.shards[0].learnedIndexes) == 0 {
 		return 0, 0, fmt.Errorf("no learned index data available (insert more data)")
 	}
-	return hs.shards[0].learnedIndexes[len(hs.shards[0].learnedIndexes)-1].BenchmarkInternal(iterations)
+	li := hs.shards[0].learnedIndexes[len(hs.shards[0].learnedIndexes)-1]
+	switch idx := li.(type) {
+	case *corelearned.LearnedIndex:
+		return idx.BenchmarkInternal(iterations)
+	case *corelearned.PythonBackedIndex:
+		return idx.BenchmarkInternal(iterations)
+	default:
+		return 0, 0, fmt.Errorf("benchmark not supported for this index type")
+	}
+}
+
+// TriggerPythonTraining runs Python 2-layer RMI training for the given shard (or all shards if shardID < 0) and hot-reloads. Blocks until done.
+func (hs *HybridStore) TriggerPythonTraining(shardID int) error {
+	shards := hs.shards
+	if shardID >= 0 {
+		if shardID >= len(hs.shards) {
+			return fmt.Errorf("shard %d out of range (0..%d)", shardID, len(hs.shards)-1)
+		}
+		shards = hs.shards[shardID : shardID+1]
+	}
+	var firstErr error
+	for _, shard := range shards {
+		shard.mutex.RLock()
+		records := hs.buildMergedRecordsFromShard(shard)
+		shard.mutex.RUnlock()
+		if len(records) == 0 {
+			continue
+		}
+		if err := hs.triggerPythonTraining(shard, ""); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

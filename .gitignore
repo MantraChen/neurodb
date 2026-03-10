@@ -6,6 +6,9 @@
 *.wal
 *.sst
 *.li
+*.li.new
+*.new
+server
 
 # Index 训练模型文件
 *.index
