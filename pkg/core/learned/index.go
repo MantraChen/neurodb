@@ -135,7 +135,7 @@ func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	if len(li.Records) == 0 {
 		return nil, false
 	}
-
+	// Error-bounds truncation: restrict to [pos + minE, pos + maxE] only (no global fallback search).
 	predictedPos, minE, maxE := li.PredictWithBounds(key)
 	low := predictedPos + minE
 	high := predictedPos + maxE
@@ -332,6 +332,7 @@ func (p *PythonBackedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	if p.Model == nil || len(p.Records) == 0 {
 		return nil, false
 	}
+	// Error-bounds truncation: binary search only in [pos + minE, pos + maxE] (per-leaf bounds from Python).
 	pos, minE, maxE := p.Model.PredictWithBounds(int64(key))
 	low := pos + minE
 	high := pos + maxE
@@ -368,6 +369,7 @@ func (p *PythonBackedIndex) Scan(lowKey, highKey common.KeyType) []common.Record
 	if len(p.Records) == 0 {
 		return res
 	}
+	// Error-bounds truncation: start scan from pos + minE (no global fallback).
 	pos, minE, _ := p.Model.PredictWithBounds(int64(lowKey))
 	startIdx := pos + minE
 	if startIdx < 0 {

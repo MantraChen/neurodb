@@ -49,7 +49,8 @@ func (m *RMILocalModel) Predict(key int64) int {
 	return pos
 }
 
-// PredictWithBounds returns (global_pos, minErr, maxErr) for tight fallback search.
+// PredictWithBounds returns (global_pos, minErr, maxErr) for error-bounds truncation:
+// the Go engine restricts point lookup and range scan to [pos+minErr, pos+maxErr] only (no global fallback).
 // Uses per-leaf error bounds when available; otherwise global MinErr/MaxErr.
 func (m *RMILocalModel) PredictWithBounds(key int64) (globalPos int, minE, maxE int) {
 	if m == nil || m.Fanout == 0 {

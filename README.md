@@ -6,7 +6,7 @@
 ![Protocol](https://img.shields.io/badge/protocol-TCP%20%7C%20MySQL-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**NeuroDB** is an adaptive relational database kernel that combines **LSM-Tree** storage with **Learned Index (RMI)** for low read/write amplification, compact storage, and fast range scans. It supports a **Go kernel + Python Sidecar** dual-engine: after compaction, Python can be invoked asynchronously to train RMI; Go keeps only load and inference.
+**NeuroDB** is an experimental high-performance SQL database engine bridging **LSM-Tree** storage and **AI Learned Index (RMI)**. It combines low read/write amplification, compact storage, and fast range scans. The **Go kernel + Python Sidecar** design runs RMI training in Python after compaction and keeps only load and inference in Go.
 
 > **Architecture highlights**: **AI-Driven Query Optimizer** (RMI-based CBO cost estimation), **Learned SSTable** (RMI at SSTable level replacing traditional block index), **MVCC-friendly design** (InternalKey and lock-free concurrency-oriented structures).
 
@@ -161,10 +161,11 @@ func main() {
 ## Project Structure
 ```Plaintext
 ├── cmd/server/           # Go main entry
-├── python/               # Python sidecar training
-│   ├── requirements.txt  # numpy, scikit-learn, etc.
-│   ├── train_rmi.py      # Consumes key CSV from Go, trains RMI, outputs .li (JSON)
-│   └── model_export.py   # Weight serialization (JSON/binary)
+├── python/               # Python sidecar / AI trainer (RMI training)
+│   ├── requirements.txt  # numpy, scikit-learn
+│   ├── train_rmi.py      # 2-layer RMI: root→bucket, leaves→local pos; outputs .li (JSON)
+│   └── model_export.py   # Weight serialization
+├── ai_trainer/           # Alias / entrypoint for Python trainer (see ai_trainer/README.md)
 ├── pkg/
 │   ├── core/             # LSM-Tree, MemTable, WAL, Compaction
 │   ├── index/
@@ -178,7 +179,13 @@ func main() {
 └── README.md
 ```
 
-**Python Sidecar**: After compaction, Go exports keys from the new SST to a temp CSV and runs `python3 python/train_rmi.py --input <csv> --output shard-N.li.new`; then `hotReloadLearnedIndex` loads the JSON as `cboModel` for CBO row estimation. Optional env `NEURODB_PYTHON_SCRIPT` overrides the script path.
+**Python Sidecar (AI Trainer)**  
+- **Data export**: On L0→L1 compaction, Go exports the merged key distribution (per shard) to a temp CSV.  
+- **Training**: The Python script (`python/train_rmi.py`, or `ai_trainer` directory) reads the CSV and trains a **two-layer RMI**: a root model (key → bucket index) and leaf models (key → local position within segment). It writes per-leaf min/max error and weights to a `.li` file (JSON).  
+- **Model对接**: Go loads the `.li` on hot-reload (or on restart when the SST signature matches). No global fallback search: point lookup and range scan use only the **error-bounds slice** `[pos - min_error, pos + max_error]` for binary search (see below).
+
+**Error bounds (no global fallback)**  
+Learned Index point lookup and range scan do **not** search the full array. After the model predicts a position `pos`, Go restricts the binary search to the slice `[pos - min_error, pos + max_error]` (per-leaf bounds when available). This keeps latency low and breaks the 0.7x bottleneck. Optional env `NEURODB_PYTHON_SCRIPT` overrides the trainer script path.
 
 ## Citation
 
