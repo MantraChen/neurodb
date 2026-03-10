@@ -45,7 +45,7 @@ func main() {
 		}
 	}()
 
-	// TCP Server (自定义二进制协议)
+	// TCP Server (custom binary protocol)
 	tcpServer := tcp.NewServer(store)
 	go func() {
 		if err := tcpServer.Start(cfg.Server.TCPAddr); err != nil {

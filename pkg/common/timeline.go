@@ -1,11 +1,11 @@
 package common
 
-// Timeline 组合键：64 位 [OwnerID 22bit | Timestamp 42bit]
-// 用于 LSM-Tree 上实现“写扩散 + 有序信箱”，将 O(N) 应用层过滤下推为 O(log N) 范围扫描。
+// Timeline composite key: 64-bit [OwnerID 22bit | Timestamp 42bit]
+// Used on LSM-Tree for write-fanout + ordered mailbox; pushes O(N) app filtering down to O(log N) range scan.
 const (
-	// Timestamp 占低 42 位，约 139 年（毫秒）
+	// Timestamp in low 42 bits (~139 years at ms granularity)
 	TimelineTimestampBits = 42
-	// OwnerID 占高 22 位，约 419 万用户；0 保留给公共大厅
+	// OwnerID in high 22 bits (~4.19M users); 0 reserved for public lobby
 	TimelineOwnerBits = 22
 )
 
@@ -14,24 +14,24 @@ var (
 	timelineOwnerMask     = (int64(1) << TimelineOwnerBits) - 1
 )
 
-// BuildTimelineKey 构建组合键: [OwnerID (22 bit)] | [Timestamp (42 bit)]
-// ownerID 需在 [0, 2^22-1]，0 表示公共大厅。
+// BuildTimelineKey builds composite key: [OwnerID (22 bit)] | [Timestamp (42 bit)]
+// ownerID in [0, 2^22-1]; 0 = public lobby.
 func BuildTimelineKey(ownerID int, timestampMs int64) KeyType {
 	return KeyType((int64(ownerID)&timelineOwnerMask)<<TimelineTimestampBits | (timestampMs & timelineTimestampMask))
 }
 
-// GetTimelineTimestamp 从组合键中提取时间戳（低 42 位）。
+// GetTimelineTimestamp extracts timestamp (low 42 bits) from the key.
 func GetTimelineTimestamp(key KeyType) int64 {
 	return int64(key) & timelineTimestampMask
 }
 
-// GetTimelineOwnerID 从组合键中提取 Owner ID（高 22 位）。
+// GetTimelineOwnerID extracts Owner ID (high 22 bits) from the key.
 func GetTimelineOwnerID(key KeyType) int {
 	return int((int64(key) >> TimelineTimestampBits) & timelineOwnerMask)
 }
 
-// UsernameToOwnerID 将用户名映射为稳定的 22 位数字 ID（简易哈希）。
-// 生产环境应由注册时分配的自增 UID 替代。"" / "PUBLIC" 返回 0（公共大厅）。
+// UsernameToOwnerID maps username to a stable 22-bit numeric ID (simple hash).
+// In production use an assigned incremental UID. "" / "PUBLIC" return 0 (public lobby).
 func UsernameToOwnerID(username string) int {
 	if username == "" || username == "PUBLIC" {
 		return 0
@@ -46,15 +46,15 @@ func UsernameToOwnerID(username string) int {
 	return int(h & timelineOwnerMask)
 }
 
-// CursorKey 返回某信箱的持久化游标 Key：同一 owner 下 timestamp=0 的 Key 专用于存 last_read_timestamp。
+// CursorKey returns the persistent cursor key for a mailbox: same owner, timestamp=0 stores last_read_timestamp.
 func CursorKey(ownerID int) KeyType {
 	return BuildTimelineKey(ownerID, 0)
 }
 
-// TimelineScanBounds 构造 O(log N) 范围扫描的 [start, end]。
-// 用于 Sync：从 lastTimestampMs 之后拉取该 owner 的所有消息。
+// TimelineScanBounds builds [start, end] for O(log N) range scan.
+// For Sync: fetch all messages for owner after lastTimestampMs.
 func TimelineScanBounds(ownerID int, lastTimestampMs int64) (start, end KeyType) {
 	start = BuildTimelineKey(ownerID, lastTimestampMs+1)
-	end = BuildTimelineKey(ownerID, timelineTimestampMask) // 同 owner 下最大时间戳
+	end = BuildTimelineKey(ownerID, timelineTimestampMask) // max timestamp for same owner
 	return start, end
 }

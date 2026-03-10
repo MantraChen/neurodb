@@ -8,16 +8,16 @@ import (
 	"sort"
 )
 
-// RMISnapshot 为仅基于 key 序列训练的 RMI 快照，用于 SSTable 尾部或 CBO 代价估算。
-// 不持有原始 Records，可序列化到文件。
+// RMISnapshot is an RMI trained on key sequence only, for SSTable footer or CBO cost estimation.
+// Does not hold raw Records; serializable to file.
 type RMISnapshot struct {
 	Model  *model.RMIModel
 	MinErr int
 	MaxErr int
-	Keys   []common.KeyType // 可选：仅用于 ErrorBound 计算；序列化时可省略以省空间
+	Keys   []common.KeyType // optional, for ErrorBound; may omit when serializing to save space
 }
 
-// BuildFromKeys 根据有序 key 列表训练 RMI 并计算误差带。
+// BuildFromKeys trains RMI on sorted keys and computes error bound.
 func BuildFromKeys(keys []common.KeyType) *RMISnapshot {
 	if len(keys) == 0 {
 		return &RMISnapshot{Model: model.NewRMIModel(1000), MinErr: 0, MaxErr: 0}
@@ -43,7 +43,7 @@ func BuildFromKeys(keys []common.KeyType) *RMISnapshot {
 	return &RMISnapshot{Model: rmi, MinErr: minErr, MaxErr: maxErr, Keys: sorted}
 }
 
-// Predict 预测 key 在有序序列中的近似位置。
+// Predict returns approximate position of key in sorted sequence.
 func (s *RMISnapshot) Predict(key common.KeyType) int {
 	if s.Model == nil {
 		return 0
@@ -51,12 +51,12 @@ func (s *RMISnapshot) Predict(key common.KeyType) int {
 	return s.Model.Predict(key)
 }
 
-// ErrorBound 返回预测误差范围 [minErr, maxErr]。
+// ErrorBound returns prediction error range [minErr, maxErr].
 func (s *RMISnapshot) ErrorBound() (minErr, maxErr int) {
 	return s.MinErr, s.MaxErr
 }
 
-// KeyCount 返回参与训练的 key 数量（用于 CBO 估算）。
+// KeyCount returns number of keys used in training (for CBO).
 func (s *RMISnapshot) KeyCount() int {
 	if s.Keys != nil {
 		return len(s.Keys)
@@ -64,13 +64,12 @@ func (s *RMISnapshot) KeyCount() int {
 	return 0
 }
 
-// MarshalBinary 序列化到字节（用于写入 SSTable 尾部）。
+// MarshalBinary serializes to bytes (for writing to SSTable footer).
 func (s *RMISnapshot) MarshalBinary() ([]byte, error) {
 	if s.Model == nil {
 		return []byte{}, nil
 	}
-	// 简化：仅保存 GlobalMin, GlobalMax, Fanout, 各 Bucket 的 Slope/Intercept, MinErr, MaxErr
-	// 完整实现可再用 gob 或自定义格式
+	// Simplified: save GlobalMin, GlobalMax, Fanout, per-bucket Slope/Intercept, MinErr, MaxErr
 	buf := make([]byte, 0, 256)
 	buf = binary.LittleEndian.AppendUint64(buf, uint64(s.Model.GlobalMin))
 	buf = binary.LittleEndian.AppendUint64(buf, uint64(s.Model.GlobalMax))
@@ -84,7 +83,7 @@ func (s *RMISnapshot) MarshalBinary() ([]byte, error) {
 	return buf, nil
 }
 
-// UnmarshalBinary 从字节反序列化（从 SSTable 尾部读取）。
+// UnmarshalBinary deserializes from bytes (read from SSTable footer).
 func (s *RMISnapshot) UnmarshalBinary(data []byte) error {
 	if len(data) < 8*2+4*3 {
 		return nil
@@ -95,8 +94,7 @@ func (s *RMISnapshot) UnmarshalBinary(data []byte) error {
 	s.Model.Fanout = int(binary.LittleEndian.Uint32(data[16:20]))
 	s.MinErr = int(int32(binary.LittleEndian.Uint32(data[20:24])))
 	s.MaxErr = int(int32(binary.LittleEndian.Uint32(data[24:28])))
-	// LinearModel 的 Slope/Intercept 为 float64，这里用 uint64 存会破坏精度；仅作框架示意
-	// 实际应使用 encoding/gob 或 float64 正确序列化
+	// LinearModel Slope/Intercept are float64; stored as bits for correct precision
 	n := (len(data) - 28) / 16
 	if n > s.Model.Fanout {
 		n = s.Model.Fanout

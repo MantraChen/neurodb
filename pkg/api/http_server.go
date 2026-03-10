@@ -1,8 +1,11 @@
 package api
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
@@ -354,19 +357,83 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	records := s.store.Scan(common.KeyType(math.MinInt64), common.KeyType(math.MaxInt64))
-	resp := backupPayload{
-		GeneratedAt: time.Now().UTC(),
-		RecordCount: len(records),
-		Records:     records,
+	// format=json keeps legacy full-table JSON export (OOM risk on large data); default is physical snapshot (tar.gz)
+	if r.URL.Query().Get("format") == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		records := s.store.Scan(common.KeyType(math.MinInt64), common.KeyType(math.MaxInt64))
+		resp := backupPayload{
+			GeneratedAt: time.Now().UTC(),
+			RecordCount: len(records),
+			Records:     records,
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
 	}
-	json.NewEncoder(w).Encode(resp)
+
+	// Physical snapshot: hold global read lock, collect .sst/.li, hardlink to temp dir, stream tar.gz
+	sstPaths, liPaths, release := s.store.BackupSnapshot()
+	defer release()
+
+	backupDir, err := os.MkdirTemp("", "neurodb_backup_")
+	if err != nil {
+		http.Error(w, "failed to create backup dir", http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(backupDir)
+
+	for _, p := range sstPaths {
+		base := filepath.Base(p)
+		dest := filepath.Join(backupDir, base)
+		if err := os.Link(p, dest); err != nil {
+			// Hardlink can fail across volumes; could fallback to copy; here we just log
+			log.Printf("[Backup] hardlink failed for %s: %v", p, err)
+		}
+	}
+	for _, p := range liPaths {
+		base := filepath.Base(p)
+		dest := filepath.Join(backupDir, base)
+		if err := os.Link(p, dest); err != nil {
+			log.Printf("[Backup] hardlink failed for %s: %v", p, err)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", "attachment; filename=neurodb_backup.tar.gz")
+	gw := gzip.NewWriter(w)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	err = filepath.Walk(backupDir, func(path string, info os.FileInfo, errWalk error) error {
+		if errWalk != nil || info.IsDir() {
+			return errWalk
+		}
+		rel, _ := filepath.Rel(backupDir, path)
+		h, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		h.Name = rel
+		if err := tw.WriteHeader(h); err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(tw, f)
+		f.Close()
+		return err
+	})
+	if err != nil {
+		log.Printf("[Backup] tar walk error: %v", err)
+		return
+	}
 }
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {

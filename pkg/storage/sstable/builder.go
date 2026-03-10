@@ -84,9 +84,9 @@ func (b *Builder) Close() error {
 		rmiBytes, err := rmiModel.MarshalBinary()
 		if err == nil && len(rmiBytes) > 0 {
 			if err := binary.Write(b.writer, binary.LittleEndian, uint32(len(rmiBytes))); err != nil {
-				// 忽略 RMI 写入失败，退化为传统索引
+				// Ignore RMI write failure; fall back to traditional index
 			} else if _, err := b.writer.Write(rmiBytes); err != nil {
-				// 同上
+				// same
 			} else {
 				if err := binary.Write(b.writer, binary.LittleEndian, indexStart); err != nil {
 					return err

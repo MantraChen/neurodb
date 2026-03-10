@@ -5,20 +5,29 @@ import (
 	"sort"
 )
 
-// ZOrderEncoder 支持任意维度的 Z-Order (Morton) 降维，作为通用联合索引插件。
-// 用于 CREATE INDEX idx_location ON table (lat, lon) 等场景，将多维坐标降维后交由 RMI 索引。
+// ZOrderCurve is the generic spatial encoding interface; e.g. PRIMARY KEY(a,b) can call Encode(a,b).
+type ZOrderCurve interface {
+	Encode(dimensions ...uint32) (int64, error)
+	Decode(code int64, dimCount int) []uint32
+}
+
+// Ensure ZOrderEncoder implements ZOrderCurve
+var _ ZOrderCurve = (*ZOrderEncoder)(nil)
+
+// ZOrderEncoder supports arbitrary-dimension Z-Order (Morton) encoding as a generic joint-index plugin.
+// E.g. CREATE INDEX idx_location ON table (lat, lon); multi-dim coords are encoded for RMI indexing.
 type ZOrderEncoder struct {
 	Dimensions int
-	// MaxBits 每维最大位数，默认 10 (0..1023)。若为 0 则使用 10。
+	// MaxBits per dimension (default 10, range 0..1023); 0 means use 10.
 	MaxBits int
 }
 
-// NewZOrderEncoder 创建指定维度的 Z-Order 编码器。
+// NewZOrderEncoder creates a Z-Order encoder for the given number of dimensions.
 func NewZOrderEncoder(dimensions int) *ZOrderEncoder {
 	return &ZOrderEncoder{Dimensions: dimensions, MaxBits: 10}
 }
 
-// part1ByD 将 n 的比特位按维度数 D 交错：第 d 维占位 d, d+D, d+2D, ...
+// part1ByD interleaves bits of n by dimension D: dimension d uses positions d, d+D, d+2D, ...
 func part1ByD(n uint64, dim, D, maxBits int) uint64 {
 	var out uint64
 	for i := 0; i < maxBits; i++ {
@@ -35,8 +44,8 @@ func compactFromD(x uint64, dim, D, maxBits int) uint32 {
 	return uint32(out)
 }
 
-// Encode 将任意维度的坐标编码为 1D Z-Order 值。
-// values 长度必须等于 Dimensions；每维应在 [0, 2^MaxBits-1] 内。
+// Encode encodes coordinates of any dimension into a 1D Z-Order value.
+// values length must equal Dimensions; each value in [0, 2^MaxBits-1].
 func (z *ZOrderEncoder) Encode(values ...uint32) (int64, error) {
 	if len(values) != z.Dimensions {
 		return 0, errors.New("dimension mismatch")
@@ -59,28 +68,40 @@ func (z *ZOrderEncoder) Encode(values ...uint32) (int64, error) {
 	return int64(code), nil
 }
 
-// Decode 将 Z-Order 码解码为各维坐标。
-func (z *ZOrderEncoder) Decode(code int64) []uint32 {
+// Decode implements ZOrderCurve: decode by dimCount into per-dimension coordinates.
+func (z *ZOrderEncoder) Decode(code int64, dimCount int) []uint32 {
+	return z.decodeN(code, dimCount)
+}
+
+// DecodeAll decodes using the encoder's dimension count.
+func (z *ZOrderEncoder) DecodeAll(code int64) []uint32 {
+	return z.decodeN(code, z.Dimensions)
+}
+
+func (z *ZOrderEncoder) decodeN(code int64, dimCount int) []uint32 {
 	maxBits := z.MaxBits
 	if maxBits <= 0 {
 		maxBits = 10
 	}
-	out := make([]uint32, z.Dimensions)
+	if dimCount <= 0 || dimCount > z.Dimensions {
+		dimCount = z.Dimensions
+	}
+	out := make([]uint32, dimCount)
 	c := uint64(code)
-	for d := 0; d < z.Dimensions; d++ {
+	for d := 0; d < dimCount; d++ {
 		out[d] = compactFromD(c, d, z.Dimensions, maxBits)
 	}
 	return out
 }
 
-// ZRange 表示 Z-Order 空间的一个连续区间。
+// ZRange is a contiguous interval in Z-Order space.
 type ZRange struct {
 	Min int64
 	Max int64
 }
 
-// GetZRanges 根据多维包围盒返回覆盖的 Z-Order 区间（用于范围扫描）。
-// bounds 为 [min0, max0, min1, max1, ...]，长度 = Dimensions*2。
+// GetZRanges returns Z-Order intervals covering the given multi-dim bounds (for range scan).
+// bounds is [min0, max0, min1, max1, ...], length = Dimensions*2.
 func (z *ZOrderEncoder) GetZRanges(bounds []uint32) ([]ZRange, error) {
 	if len(bounds) != z.Dimensions*2 {
 		return nil, errors.New("bounds length must be Dimensions*2")
@@ -96,8 +117,7 @@ func (z *ZOrderEncoder) GetZRanges(bounds []uint32) ([]ZRange, error) {
 }
 
 func (z *ZOrderEncoder) decompose(mins, maxs []uint32, zStart int64, acc *[]ZRange) {
-	// 简化：单点或小范围直接枚举并编码得到 [minZ, maxZ] 区间
-	// 完整实现可参考 common/spatial 的 decompose 递归逻辑，这里给出接口与占位。
+	// Simplified: single point or small range; full impl could use common/spatial decompose recursion
 	n := int64(1)
 	for i := 0; i < z.Dimensions; i++ {
 		n *= int64(maxs[i] - mins[i] + 1)

@@ -6,12 +6,12 @@ import (
 	"strings"
 )
 
-// LogicalPlan 表示优化器输入的逻辑计划（当前与 AST 一一对应，后续可扩展）。
+// LogicalPlan is the optimizer input (currently 1:1 with AST; extensible later).
 type LogicalPlan struct {
 	Select *ast.SelectStmt
 }
 
-// PhysicalPlan 表示优化器输出的物理执行计划。
+// PhysicalPlan is the optimizer output physical execution plan.
 type PhysicalPlan struct {
 	ScanType   ScanType
 	StartKey   int64
@@ -20,7 +20,7 @@ type PhysicalPlan struct {
 	WhereMatch func(id int64) bool
 }
 
-// ScanType 表示扫描策略。
+// ScanType is the scan strategy.
 type ScanType int
 
 const (
@@ -29,15 +29,28 @@ const (
 	ScanSecondaryIndex
 )
 
-// RMIEstimator 基于 RMI 模型做范围行数估算，供 CBO 使用。
-// 由调用方注入（如从 storage 或 index 层获取当前表的 RMI）。
+// RMIEstimator estimates range row count from an RMI model for CBO; injected by caller.
 type RMIEstimator interface {
 	Predict(key int64) int
 	ErrorBound() (minErr, maxErr int)
 	KeyCount() int
 }
 
-// EstimateRangeRows 利用 RMI 的 CDF 特性做 O(1) 范围行数估算。
+// ShardWithRMI is a shard abstraction for O(1) row estimation without depending on core.
+type ShardWithRMI interface {
+	RMIEstimator() (RMIEstimator, bool)
+}
+
+// EstimateRangeRowsFromShard uses the shard's trained RMI for fast row estimation; holds read lock.
+func EstimateRangeRowsFromShard(s ShardWithRMI, startKey, endKey int64) int {
+	model, ok := s.RMIEstimator()
+	if !ok || model == nil {
+		return -1
+	}
+	return EstimateRangeRows(model, startKey, endKey)
+}
+
+// EstimateRangeRows uses RMI's CDF for O(1) range row count estimation.
 func EstimateRangeRows(model RMIEstimator, startKey, endKey int64) int {
 	if model == nil || model.KeyCount() == 0 {
 		return 0
@@ -45,7 +58,7 @@ func EstimateRangeRows(model RMIEstimator, startKey, endKey int64) int {
 	startPos := model.Predict(startKey)
 	endPos := model.Predict(endKey)
 	minE, maxE := model.ErrorBound()
-	// 考虑误差带
+	// Account for error bound
 	lo := startPos + minE
 	hi := endPos + maxE
 	if lo < 0 {
@@ -62,12 +75,12 @@ func EstimateRangeRows(model RMIEstimator, startKey, endKey int64) int {
 	return estimated
 }
 
-// Optimizer 基于代价选择物理计划。
+// Optimizer chooses physical plan by cost.
 type Optimizer struct {
 	Estimator RMIEstimator
 }
 
-// CreatePhysicalPlan 根据逻辑计划与 RMI 代价估算生成物理计划。
+// CreatePhysicalPlan builds a physical plan from the logical plan and RMI cost estimate.
 func (opt *Optimizer) CreatePhysicalPlan(logical *LogicalPlan) *PhysicalPlan {
 	if logical == nil || logical.Select == nil {
 		return nil
@@ -87,7 +100,7 @@ func (opt *Optimizer) CreatePhysicalPlan(logical *LogicalPlan) *PhysicalPlan {
 		plan.WhereMatch = whereMatcher(sel.Where)
 	}
 
-	// 若有 RMI，根据范围估算选择全表扫描或主键范围扫描
+	// If RMI present, choose full scan vs primary range scan by cost
 	if opt.Estimator != nil {
 		estimated := EstimateRangeRows(opt.Estimator, startKey, endKey)
 		if estimated > 0 && estimated < opt.Estimator.KeyCount() {
@@ -102,7 +115,7 @@ func (opt *Optimizer) CreatePhysicalPlan(logical *LogicalPlan) *PhysicalPlan {
 }
 
 func tableKeyRange(table string) (start, end int64) {
-	// 与 pkg/sql 的 TableKeyRange 保持一致：FNV hash 得到 1M 区间
+	// Match pkg/sql TableKeyRange: FNV hash for 1M key range
 	h := fnvHashTable(table)
 	base := int64((h >> 16) & 0x7FFFFFFFFFFF)
 	start = base * 1000000

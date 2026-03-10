@@ -1,4 +1,4 @@
-# NeuroDB: An Adaptive, Learned-Index Powered Relational Database Engine
+# NeuroDB: High-Performance SQL Storage Engine with Learned Index
 
 ![Build Status](https://img.shields.io/badge/build-passing-success)
 ![Go Version](https://img.shields.io/badge/go-1.24-blue)
@@ -6,7 +6,7 @@
 ![Protocol](https://img.shields.io/badge/protocol-TCP%20%7C%20MySQL-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**NeuroDB** is an adaptive relational database kernel that combines **LSM-Tree** storage with **Learned Index (RMI)** technology. It emphasizes low read/write amplification, compact storage, and fast range scans through an AI-augmented storage and query stack.
+**NeuroDB** is an adaptive relational database kernel that combines **LSM-Tree** storage with **Learned Index (RMI)** for low read/write amplification, compact storage, and fast range scans. It supports a **Go kernel + Python Sidecar** dual-engine: after compaction, Python can be invoked asynchronously to train RMI; Go keeps only load and inference.
 
 > **Architecture highlights**: **AI-Driven Query Optimizer** (RMI-based CBO cost estimation), **Learned SSTable** (RMI at SSTable level replacing traditional block index), **MVCC-friendly design** (InternalKey and lock-free concurrency-oriented structures).
 
@@ -86,14 +86,14 @@ Open your browser and navigate to: http://localhost:8080
 * **AI Diagnostics**: Real-time Error Heatmap of the Learned Index model.
 * **Scan Results**: Range Scan and SQL query results displayed in-table.
 * **SQL Query**: Execute `SELECT * FROM <table> [WHERE id ...] [LIMIT ...]` directly in the UI.
-* **Backup/Restore**: Export JSON backup and restore from file in the admin panel.
+* **Backup/Restore**: Physical snapshot (tar.gz) or JSON export, and restore from JSON.
 * **Loading Feedback**: Progress indicators for Ingest, Benchmark, and Scan.
 ## Configuration
 The server looks for `configs/neuro.yaml` or `neuro.yaml`; use `-config` to override. If no file is found, defaults are used. To customize, copy `configs/config.example.yaml` to `configs/neuro.yaml` and edit.
 
 **Health check**: `GET /api/health` returns `{"status":"ok"}`.
 **Prometheus metrics**: `GET /metrics`.
-**Backup API**: `GET /api/backup`, `POST /api/restore`.
+**Backup API**: `GET /api/backup` returns a physical snapshot (tar.gz of hardlinked .sst/.li, instant, no OOM); `GET /api/backup?format=json` for JSON export. `POST /api/restore` restores from JSON.
 **SQL API**: `POST /api/sql` with `{"query": "SELECT * FROM users WHERE id >= 100 LIMIT 10"}` returns `{"table","count","rows"}`.
 
 ```yaml
@@ -160,28 +160,25 @@ func main() {
 
 ## Project Structure
 ```Plaintext
-├── cmd/server/           # Database Kernel Entry
+├── cmd/server/           # Go main entry
+├── python/               # Python sidecar training
+│   ├── requirements.txt  # numpy, scikit-learn, etc.
+│   ├── train_rmi.py      # Consumes key CSV from Go, trains RMI, outputs .li (JSON)
+│   └── model_export.py   # Weight serialization (JSON/binary)
 ├── pkg/
-│   ├── sql/              # SQL 核心与优化
-│   │   ├── ast/          # 抽象语法树节点
-│   │   ├── parser/       # 当前正则解析 (可扩展为 goyacc 等)
-│   │   ├── optimizer/    # 基于 RMI 的 CBO 代价估算
-│   │   └── executor/     # 物理计划执行
-│   ├── storage/
-│   │   ├── mvcc/         # InternalKey、多版本并发控制相关类型
-│   │   ├── sstable/      # SSTable + Learned Index 下推
-│   │   └── wal/
+│   ├── core/             # LSM-Tree, MemTable, WAL, Compaction
 │   ├── index/
-│   │   ├── learned/      # RMI 模型训练/预测与 SSTable 用 RMISnapshot
-│   │   └── spatial/      # 通用 Z-Order 降维插件
-│   ├── network/
-│   │   ├── mysql/        # MySQL Wire Protocol 网关
-│   │   └── tcp/          # 自定义二进制协议
-│   ├── core/             # HybridStore (LSM 逻辑、Compaction)
-│   ├── client/           # Go SDK
-│   └── common/           # 公共类型与 3D Z-Order 兼容
-└── static/               # Web Console (HTML/JS)
+│   │   ├── learned/      # RMI load & inference only (RMILocalModel, LoadFromJSON)
+│   │   └── spatial/      # ZOrderCurve generic joint-index encoding
+│   ├── sql/
+│   │   ├── parser/       # SQL AST parsing
+│   │   └── optimizer/    # RMI-based CBO (EstimateRangeRowsFromShard)
+│   ├── api/              # HTTP API (incl. physical snapshot backup)
+│   └── ...
+└── README.md
 ```
+
+**Python Sidecar**: After compaction, Go exports keys from the new SST to a temp CSV and runs `python3 python/train_rmi.py --input <csv> --output shard-N.li.new`; then `hotReloadLearnedIndex` loads the JSON as `cboModel` for CBO row estimation. Optional env `NEURODB_PYTHON_SCRIPT` overrides the script path.
 
 ## Citation
 

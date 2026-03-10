@@ -87,7 +87,7 @@ func TestBackupAndRestoreHandlers(t *testing.T) {
 	store.Put(100, []byte("a"))
 	store.Put(101, []byte("b"))
 
-	backupReq := httptest.NewRequest(http.MethodGet, "/api/backup", nil)
+	backupReq := httptest.NewRequest(http.MethodGet, "/api/backup?format=json", nil)
 	backupRec := httptest.NewRecorder()
 	s.handleBackup(backupRec, backupReq)
 	if backupRec.Code != http.StatusOK {

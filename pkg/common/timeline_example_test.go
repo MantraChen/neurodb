@@ -1,8 +1,8 @@
-// 本文件演示如何在应用层使用 Timeline 组合键实现：
-// 1) 写扩散 (Write-Fanout)：私聊双写发件箱/收件箱，公共大厅单写；
-// 2) 持久化游标 + O(log N) 范围扫描替代 O(N) 全表过滤。
+// This file demonstrates using Timeline composite keys at the app layer for:
+// 1) Write-Fanout: DM double-write to sender/receiver mailbox; public lobby single write.
+// 2) Persistent cursor + O(log N) range scan instead of O(N) full-table filter.
 //
-// 存储接口假设为 Put/Get/Scan，与 pkg/core.HybridStore 一致。
+// Store interface is Put/Get/Scan, aligned with pkg/core.HybridStore.
 
 package common
 
@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// 示例：消息体（应用层定义）
+// Example message body (app-defined)
 type exampleMsg struct {
 	Sender   string `json:"sender"`
 	Receiver string `json:"receiver"`
@@ -20,18 +20,18 @@ type exampleMsg struct {
 	Ts       int64  `json:"ts"`
 }
 
-// 假设的存储接口（与 HybridStore 对齐）
+// Example store interface (aligned with HybridStore)
 type exampleStore interface {
 	Put(key KeyType, value ValueType)
 	Get(key KeyType) (ValueType, bool)
 	Scan(start, end KeyType) []Record
 }
 
-// WriteFanout 写扩散：根据是否公共大厅决定写 1 份还是 2 份（发件人+收件人信箱）。
+// WriteFanout: write 1 copy (public lobby) or 2 (sender + receiver mailbox).
 func WriteFanout(store exampleStore, sender, receiver string, msg exampleMsg) {
 	ts := msg.Ts
 	if ts <= 0 {
-		ts = 1 // 避免与 CursorKey(ts=0) 冲突
+		ts = 1 // avoid clashing with CursorKey(ts=0)
 	}
 	senderID := UsernameToOwnerID(sender)
 	receiverID := UsernameToOwnerID(receiver)
@@ -43,21 +43,21 @@ func WriteFanout(store exampleStore, sender, receiver string, msg exampleMsg) {
 		store.Put(key, val)
 		return
 	}
-	// 私聊：双写
+	// DM: double write
 	store.Put(BuildTimelineKey(senderID, ts), val)
 	if senderID != receiverID {
 		store.Put(BuildTimelineKey(receiverID, ts), val)
 	}
 }
 
-// SyncTimeline 拉取某信箱从 lastTs 之后的消息，并更新持久化游标。读路径为 O(log N) 范围扫描。
+// SyncTimeline fetches messages for a mailbox after lastTs and updates the persistent cursor. O(log N) range scan.
 func SyncTimeline(store exampleStore, currentUser, target string, lastTs int64) ([]exampleMsg, error) {
 	myID := UsernameToOwnerID(currentUser)
 	targetID := myID
 	if target == "" || target == "PUBLIC" {
 		targetID = 0
 	}
-	// 若未传 lastTs，从存储中读游标（CursorKey 存 last_read_timestamp）
+	// If lastTs not provided, read cursor from store (CursorKey holds last_read_timestamp)
 	if lastTs <= 0 {
 		if v, ok := store.Get(CursorKey(targetID)); ok && len(v) > 0 {
 			lastTs = parseInt64(string(v))
@@ -76,7 +76,7 @@ func SyncTimeline(store exampleStore, currentUser, target string, lastTs int64) 
 			out = append(out, m)
 		}
 	}
-	// 更新游标
+	// Update cursor
 	if len(out) > 0 {
 		newLast := out[len(out)-1].Ts
 		store.Put(CursorKey(targetID), []byte(formatInt64(newLast)))
@@ -108,7 +108,7 @@ func formatInt64(n int64) string {
 	return string(b[i+1:])
 }
 
-// mockStore 内存实现，用于示例测试
+// mockStore in-memory impl for example test
 type mockStore struct {
 	m map[KeyType]ValueType
 }
@@ -137,17 +137,17 @@ func (m *mockStore) Scan(start, end KeyType) []Record {
 
 func TestExampleWriteFanoutAndSync(t *testing.T) {
 	store := &mockStore{}
-	// 公共大厅一条
+	// One public lobby message
 	WriteFanout(store, "alice", "PUBLIC", exampleMsg{Sender: "alice", Receiver: "PUBLIC", Body: "hi all", Ts: 1000})
-	// 私聊一条：应写两份（alice 与 bob 各一份）
+	// One DM: should write two copies (alice and bob each)
 	WriteFanout(store, "alice", "bob", exampleMsg{Sender: "alice", Receiver: "bob", Body: "hello", Ts: 2000})
 
-	// 拉取公共大厅
+	// Fetch public lobby
 	msgs, _ := SyncTimeline(store, "alice", "PUBLIC", 0)
 	if len(msgs) != 1 || msgs[0].Body != "hi all" {
 		t.Fatalf("public timeline: got %d msgs", len(msgs))
 	}
-	// 拉取 alice 信箱（应包含 public + 发件）
+	// Fetch alice mailbox (should include public + DM)
 	msgs, _ = SyncTimeline(store, "alice", "alice", 0)
 	if len(msgs) < 1 {
 		t.Fatalf("alice timeline: got %d", len(msgs))

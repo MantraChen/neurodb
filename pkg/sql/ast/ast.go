@@ -1,21 +1,21 @@
 package ast
 
-// Node 为 AST 根接口。
+// Node is the AST root interface.
 type Node interface {
 	Pos() int
 }
 
-// SelectStmt 表示 SELECT 语句的逻辑计划节点。
+// SelectStmt is the logical plan node for a SELECT statement.
 type SelectStmt struct {
 	Table   string
-	Columns []string // 当前为 * 时为空，表示全列
+	Columns []string // empty when SELECT *, meaning all columns
 	Where   *WhereClause
 	Limit   *LimitClause
 }
 
 func (s *SelectStmt) Pos() int { return 0 }
 
-// WhereClause 表示 WHERE 条件。
+// WhereClause is the WHERE condition.
 type WhereClause struct {
 	Field string
 	Op    string // =, !=, >, <, >=, <=
@@ -24,7 +24,7 @@ type WhereClause struct {
 
 func (w *WhereClause) Pos() int { return 0 }
 
-// LimitClause 表示 LIMIT n。
+// LimitClause is LIMIT n.
 type LimitClause struct {
 	N int
 }

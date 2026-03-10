@@ -18,7 +18,7 @@ type DiagnosticPoint struct {
 }
 
 type LearnedIndex struct {
-	Records []common.Record // 原始数据
+	Records []common.Record // raw data
 	Model   *model.RMIModel
 	MinErr  int
 	MaxErr  int
@@ -90,6 +90,24 @@ func (li *LearnedIndex) GetAllRecords() []common.Record {
 	return li.Records
 }
 
+// Predict returns approximate position of key in sorted sequence (implements RMIEstimator).
+func (li *LearnedIndex) Predict(key int64) int {
+	if li.Model == nil {
+		return 0
+	}
+	return li.Model.Predict(common.KeyType(key))
+}
+
+// ErrorBound returns prediction error range (implements RMIEstimator).
+func (li *LearnedIndex) ErrorBound() (minErr, maxErr int) {
+	return li.MinErr, li.MaxErr
+}
+
+// KeyCount returns record count (implements RMIEstimator).
+func (li *LearnedIndex) KeyCount() int {
+	return len(li.Records)
+}
+
 func (li *LearnedIndex) Get(key common.KeyType) (common.ValueType, bool) {
 	if len(li.Records) == 0 {
 		return nil, false
@@ -138,7 +156,7 @@ func (li *LearnedIndex) Size() int {
 }
 
 func (li *LearnedIndex) ExportDiagnostics() []DiagnosticPoint {
-	// 采样导出，避免数据量过大
+	// Sample export to avoid huge output
 	step := 1
 	if len(li.Records) > 5000 {
 		step = len(li.Records) / 5000

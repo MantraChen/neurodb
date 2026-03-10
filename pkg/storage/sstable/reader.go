@@ -32,7 +32,7 @@ func Open(filename string) (*SSTable, error) {
 		return nil, errors.New("sstable: file too small")
 	}
 
-	// 兼容旧格式(16 字节 footer)与新格式(24 字节 footer + RMI)。先读最后 24 字节。
+	// Support legacy 16-byte footer and new 24-byte footer + RMI; read last 24 bytes first.
 	footer24 := make([]byte, FooterSizeRMI)
 	if _, err := f.ReadAt(footer24, size-FooterSizeRMI); err != nil {
 		return nil, err
@@ -44,12 +44,12 @@ func Open(filename string) (*SSTable, error) {
 	var hasRMI bool
 
 	if magicAt8 == MagicNumberRMI {
-		// 新格式：footer 24 字节 = indexStart(8) + magic(8) + rmiOffset(8)
+		// New format: 24-byte footer = indexStart(8) + magic(8) + rmiOffset(8)
 		indexOffset = int64(binary.LittleEndian.Uint64(footer24[0:8]))
 		rmiOffset = int64(binary.LittleEndian.Uint64(footer24[16:24]))
 		hasRMI = true
 	} else if magicAt16 == MagicNumber {
-		// 旧格式：最后 16 字节 = indexStart(8) + magic(8)，即 footer24[8:24]
+		// Legacy: last 16 bytes = indexStart(8) + magic(8), i.e. footer24[8:24]
 		indexOffset = int64(binary.LittleEndian.Uint64(footer24[8:16]))
 	} else {
 		return nil, errors.New("sstable: invalid magic number")

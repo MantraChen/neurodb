@@ -16,7 +16,7 @@ type BloomFilter struct {
 }
 
 func NewBloomFilter(n uint, p float64) *BloomFilter {
-	// 理论最佳公式
+	// Theoretical optimum formula
 	// m = - (n * ln(p)) / (ln(2)^2)
 	// k = (m / n) * ln(2)
 

@@ -5,19 +5,19 @@ import (
 )
 
 func TestBuildTimelineKey(t *testing.T) {
-	// 公共大厅 owner=0
+	// Public lobby owner=0
 	k0 := BuildTimelineKey(0, 1000)
 	if GetTimelineOwnerID(k0) != 0 || GetTimelineTimestamp(k0) != 1000 {
 		t.Fatalf("owner=0, ts=1000: got owner=%d ts=%d", GetTimelineOwnerID(k0), GetTimelineTimestamp(k0))
 	}
 
-	// 普通用户
+	// Regular user
 	k1 := BuildTimelineKey(12345, 1609459200000)
 	if GetTimelineOwnerID(k1) != 12345 || GetTimelineTimestamp(k1) != 1609459200000 {
 		t.Fatalf("owner=12345: got owner=%d ts=%d", GetTimelineOwnerID(k1), GetTimelineTimestamp(k1))
 	}
 
-	// 游标 Key：timestamp=0
+	// Cursor key: timestamp=0
 	cursor := CursorKey(7)
 	if GetTimelineTimestamp(cursor) != 0 || GetTimelineOwnerID(cursor) != 7 {
 		t.Fatalf("CursorKey(7): got owner=%d ts=%d", GetTimelineOwnerID(cursor), GetTimelineTimestamp(cursor))
@@ -25,7 +25,7 @@ func TestBuildTimelineKey(t *testing.T) {
 }
 
 func TestTimelineOrdering(t *testing.T) {
-	// 同 owner 下按时间有序
+	// Same owner ordered by time
 	owner := 1
 	k1 := BuildTimelineKey(owner, 100)
 	k2 := BuildTimelineKey(owner, 200)
@@ -34,7 +34,7 @@ func TestTimelineOrdering(t *testing.T) {
 		t.Fatalf("keys should be ordered: %d %d %d", k1, k2, k3)
 	}
 
-	// 不同 owner 不重叠
+	// Different owners do not overlap
 	kA := BuildTimelineKey(0, 1000)
 	kB := BuildTimelineKey(1, 1000)
 	if kA >= kB {

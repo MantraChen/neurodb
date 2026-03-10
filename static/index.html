@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NeuroDB Kernel Console</title>
+    <title>NeuroDB — High-Performance SQL Storage Engine with Learned Index</title>
     <style>
         :root {
             /* Professional Dark Theme (GitHub / VScode Inspired) */
@@ -196,10 +196,10 @@
 <body>
 
     <header>
-        <h1>NeuroDB <span class="badge badge-live">v2.8</span></h1>
+        <h1>NeuroDB <span class="badge badge-live">Learned Index</span></h1>
         <div class="status-indicator">
             <div class="dot"></div>
-            <span>Engine: Sharded + LSM-Tree (L0/L1)</span>
+            <span>LSM-Tree (L0/L1) · RMI · CBO</span>
         </div>
     </header>
 
@@ -255,14 +255,14 @@
             </div>
 
             <div class="panel">
-                <div class="panel-title">Spatial Query (Z-Order)</div>
+                <div class="panel-title">Spatial (Z-Order)</div>
                 <div class="form-row group-input">
                     <input type="number" id="mx" placeholder="X" value="100">
                     <input type="number" id="my" placeholder="Y" value="200">
                     <input type="number" id="mz" placeholder="Z" value="50">
-                    <button class="btn-primary" onclick="doMoCap()">Track</button>
+                    <button class="btn-primary" onclick="doMoCap()">Encode</button>
                 </div>
-                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Maps 3D coordinates to 1D Linear Key</div>
+                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Z-Order encode multi-dimensional coordinates to 1D key</div>
             </div>
 
             <div class="panel">
@@ -295,7 +295,10 @@
                     <button class="btn-block" onclick="downloadCSV()">Export Model CSV</button>
                 </div>
                 <div class="form-row">
-                    <button class="btn-block" onclick="backupDB()">Backup JSON</button>
+                    <button class="btn-block btn-primary" onclick="backupSnapshot()">Backup Snapshot (tar.gz)</button>
+                </div>
+                <div class="form-row">
+                    <button class="btn-block" onclick="backupJSON()">Backup JSON</button>
                 </div>
                 <div class="form-row">
                     <input type="file" id="restoreFile" accept="application/json" style="display:none">
@@ -344,7 +347,7 @@
             </div>
 
             <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB v2.8 Ready. LSM-Tree + Learned Index Active.</span></div>
+                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB Ready. LSM-Tree + Learned Index + CBO.</span></div>
             </div>
         </div>
     </div>
@@ -530,7 +533,7 @@
                 if(d.error) {
                     log(`SQL Error: ${d.error}`, 'err');
                 } else {
-                    const rows = (d.rows || []).map(r => ({key: r.id, value: r.data}));
+                    const rows = (d.rows || []).map(r => ({key: r.id, value: r.value ?? r.data}));
                     renderScanResults(rows, d.count, `FROM ${d.table}`);
                     log(`SQL Result: ${d.count} rows from ${d.table}`, 'ok');
                 }
@@ -563,7 +566,7 @@
             finally { btn.innerHTML = originalText; btn.disabled = false; }
         }
 
-        // [核心优化] 动态自适应热力图
+        // Dynamic adaptive heatmap
         async function loadHeatmap() {
             const cvs = document.getElementById('heatCanvas');
             const ctx = cvs.getContext('2d');
@@ -590,7 +593,7 @@
                 const maxK = data[data.length-1].k;
                 const rangeK = maxK - minK || 1;
 
-                // 1. 动态计算最大误差
+                // 1. Compute max error
                 let maxErrAbs = 0;
                 data.forEach(p => {
                     const absE = Math.abs(p.e);
@@ -598,10 +601,10 @@
                 });
                 if (maxErrAbs === 0) maxErrAbs = 1;
 
-                // 2. 计算缩放因子 (留 10% 边距)
+                // 2. Scale factor (10% margin)
                 const scaleFactor = ((H / 2) / maxErrAbs) * 0.9;
 
-                // 3. 绘制
+                // 3. Draw
                 data.forEach(p => {
                     const x = ((p.k - minK) / rangeK) * W;
                     let y = (H/2) - (p.e * scaleFactor);
@@ -614,7 +617,7 @@
                     else if(errMag < 20) ctx.fillStyle = '#d29922'; 
                     else ctx.fillStyle = '#da3633';                 
 
-                    ctx.fillRect(x, y, 2, 2);
+                    ctx.fillRect(x, y, 2, 2);   x
                 });
                 log(`Heatmap updated (${data.length} pts, Scale: 1:${scaleFactor.toFixed(2)})`, 'ok');
 
@@ -623,22 +626,40 @@
 
         // --- Admin ---
         function downloadCSV() { window.location.href = "/api/export"; }
-        
-        async function backupDB() {
+
+        /** Default: physical snapshot (hardlink .sst/.li, tar.gz), instant, no OOM */
+        async function backupSnapshot() {
             try {
                 const res = await fetch('/api/backup');
+                if (!res.ok) throw new Error(`backup failed: ${res.status}`);
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                a.href = url;
+                a.download = `neurodb-snapshot-${ts}.tar.gz`;
+                a.click();
+                URL.revokeObjectURL(url);
+                log('Backup snapshot downloaded (tar.gz).', 'ok');
+            } catch (e) { log(`Backup snapshot failed: ${e}`, 'err'); }
+        }
+
+        /** Optional: full-table JSON export (may be slow on large data) */
+        async function backupJSON() {
+            try {
+                const res = await fetch('/api/backup?format=json');
                 if (!res.ok) throw new Error(`backup failed: ${res.status}`);
                 const data = await res.json();
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                const ts = new Date().toISOString().replace(/[:.]/g, '-');
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 a.href = url;
                 a.download = `neurodb-backup-${ts}.json`;
                 a.click();
                 URL.revokeObjectURL(url);
-                log(`Backup exported (${data.record_count || 0} records).`, 'ok');
-            } catch (e) { log(`Backup error: ${e}`, 'err'); }
+                log(`Backup JSON exported (${data.record_count || 0} records).`, 'ok');
+            } catch (e) { log(`Backup JSON failed: ${e}`, 'err'); }
         }
 
         function triggerRestore() {

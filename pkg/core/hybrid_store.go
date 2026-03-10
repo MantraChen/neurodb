@@ -7,13 +7,16 @@ import (
 	"math"
 	"neurodb/pkg/common"
 	"neurodb/pkg/config"
-	"neurodb/pkg/core/learned"
+	corelearned "neurodb/pkg/core/learned"
 	"neurodb/pkg/core/memory"
 	"neurodb/pkg/core/structure"
+	indexlearned "neurodb/pkg/index/learned"
 	"neurodb/pkg/monitor"
 	"neurodb/pkg/storage"
 	"neurodb/pkg/storage/sstable"
+	"neurodb/pkg/sql/optimizer"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -26,7 +29,8 @@ type Shard struct {
 	id             int
 	mutex          sync.RWMutex
 	mutableMem     *memory.MemTable
-	learnedIndexes []*learned.LearnedIndex
+	learnedIndexes []*corelearned.LearnedIndex
+	cboModel       optimizer.RMIEstimator
 	l0SSTables     []*sstable.SSTable
 	l1SSTables     []*sstable.SSTable
 	sstables       []*sstable.SSTable
@@ -38,7 +42,7 @@ func NewShard(id int, bloomSize uint, bloomP float64) *Shard {
 	return &Shard{
 		id:             id,
 		mutableMem:     memory.NewMemTable(32),
-		learnedIndexes: make([]*learned.LearnedIndex, 0),
+		learnedIndexes: make([]*corelearned.LearnedIndex, 0),
 		l0SSTables:     make([]*sstable.SSTable, 0),
 		l1SSTables:     make([]*sstable.SSTable, 0),
 		sstables:       make([]*sstable.SSTable, 0),
@@ -54,13 +58,14 @@ func (shard *Shard) rebuildSSTableViewLocked() {
 }
 
 type HybridStore struct {
-	shards  []*Shard
-	backend storage.Backend
-	stats   *monitor.WorkloadStats
-	writeCh chan common.Record
-	closeCh chan struct{}
-	wg      sync.WaitGroup
-	conf    *config.Config
+	shards   []*Shard
+	backend  storage.Backend
+	stats    *monitor.WorkloadStats
+	writeCh  chan common.Record
+	closeCh  chan struct{}
+	wg       sync.WaitGroup
+	conf     *config.Config
+	backupMu sync.RWMutex
 }
 
 func NewHybridStore(cfg *config.Config) *HybridStore {
@@ -99,6 +104,47 @@ func NewHybridStore(cfg *config.Config) *HybridStore {
 
 func (hs *HybridStore) getShard(key common.KeyType) *Shard {
 	return hs.shards[int(key)%hs.conf.System.ShardCount]
+}
+
+// StoragePath returns the data directory for API physical snapshot backup etc.
+func (hs *HybridStore) StoragePath() string {
+	return hs.conf.Storage.Path
+}
+
+// RMIEstimator implements optimizer.ShardWithRMI for CBO O(1) row estimation.
+func (shard *Shard) RMIEstimator() (optimizer.RMIEstimator, bool) {
+	shard.mutex.RLock()
+	defer shard.mutex.RUnlock()
+	if len(shard.learnedIndexes) > 0 {
+		return shard.learnedIndexes[0], true
+	}
+	if shard.cboModel != nil {
+		return shard.cboModel, true
+	}
+	return nil, false
+}
+
+// BackupSnapshot collects all active .sst and .li paths under read lock;
+// caller must hardlink/pack before release() to briefly block Compaction.
+func (hs *HybridStore) BackupSnapshot() (sstPaths, liPaths []string, release func()) {
+	hs.backupMu.RLock()
+	sstPaths = make([]string, 0)
+	liPaths = make([]string, 0)
+	for _, shard := range hs.shards {
+		shard.mutex.RLock()
+		for _, t := range shard.sstables {
+			if t != nil && t.Filename != "" {
+				sstPaths = append(sstPaths, t.Filename)
+			}
+		}
+		shard.mutex.RUnlock()
+	}
+	// .li files by naming convention, consistent with learnedIndexPath
+	pattern := filepath.Join(hs.conf.Storage.Path, "shard-*.li")
+	matches, _ := filepath.Glob(pattern)
+	liPaths = append(liPaths, matches...)
+	release = func() { hs.backupMu.RUnlock() }
+	return sstPaths, liPaths, release
 }
 
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
@@ -213,7 +259,7 @@ func (hs *HybridStore) rebuildLearnedIndexFromSSTables(shard *Shard) {
 
 	if len(tables) == 0 {
 		shard.mutex.Lock()
-		shard.learnedIndexes = make([]*learned.LearnedIndex, 0)
+		shard.learnedIndexes = make([]*corelearned.LearnedIndex, 0)
 		shard.mutex.Unlock()
 		return
 	}
@@ -233,7 +279,7 @@ func (hs *HybridStore) rebuildLearnedIndexFromSSTables(shard *Shard) {
 
 	if len(latestByKey) == 0 {
 		shard.mutex.Lock()
-		shard.learnedIndexes = make([]*learned.LearnedIndex, 0)
+		shard.learnedIndexes = make([]*corelearned.LearnedIndex, 0)
 		shard.mutex.Unlock()
 		return
 	}
@@ -243,9 +289,9 @@ func (hs *HybridStore) rebuildLearnedIndexFromSSTables(shard *Shard) {
 		records = append(records, common.Record{Key: key, Value: val})
 	}
 
-	rebuilt := learned.Build(records)
+	rebuilt := corelearned.Build(records)
 	shard.mutex.Lock()
-	shard.learnedIndexes = []*learned.LearnedIndex{rebuilt}
+	shard.learnedIndexes = []*corelearned.LearnedIndex{rebuilt}
 	shard.mutex.Unlock()
 	hs.persistLearnedIndex(shard, rebuilt)
 }
@@ -289,7 +335,7 @@ func (hs *HybridStore) learnedIndexPath(shardID int, sig string) string {
 	return filepath.Join(hs.conf.Storage.Path, fmt.Sprintf("shard-%d-%s.li", shardID, sig))
 }
 
-func (hs *HybridStore) persistLearnedIndex(shard *Shard, li *learned.LearnedIndex) {
+func (hs *HybridStore) persistLearnedIndex(shard *Shard, li *corelearned.LearnedIndex) {
 	sig := hs.learnedIndexSignature(shard)
 	if sig == "" || li == nil {
 		return
@@ -314,14 +360,73 @@ func (hs *HybridStore) tryLoadPersistedLearnedIndex(shard *Shard) bool {
 		return false
 	}
 	path := hs.learnedIndexPath(shard.id, sig)
-	li, err := learned.Load(path)
+	li, err := corelearned.Load(path)
 	if err != nil {
 		return false
 	}
 	shard.mutex.Lock()
-	shard.learnedIndexes = []*learned.LearnedIndex{li}
+	shard.learnedIndexes = []*corelearned.LearnedIndex{li}
 	shard.mutex.Unlock()
 	return true
+}
+
+// extractKeysToCSV extracts all keys from an SSTable file into a temp CSV; returns path.
+func (hs *HybridStore) extractKeysToCSV(sstPath string) (string, error) {
+	sst, err := sstable.Open(sstPath)
+	if err != nil {
+		return "", err
+	}
+	defer sst.Close()
+	f, err := os.CreateTemp("", "neurodb_keys_*.csv")
+	if err != nil {
+		return "", err
+	}
+	it := sst.NewIterator()
+	for it.Next() {
+		fmt.Fprintf(f, "%d\n", it.Key())
+	}
+	it.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// triggerPythonTraining invokes Python sidecar to train RMI asynchronously, then hot-reloads .li.
+func (hs *HybridStore) triggerPythonTraining(shard *Shard, newSSTPath string) {
+	keysPath, err := hs.extractKeysToCSV(newSSTPath)
+	if err != nil {
+		log.Printf("[Python RMI] extractKeys failed: %v", err)
+		return
+	}
+	defer os.Remove(keysPath)
+
+	outLiPath := filepath.Join(hs.conf.Storage.Path, fmt.Sprintf("shard-%d.li.new", shard.id))
+	scriptPath := os.Getenv("NEURODB_PYTHON_SCRIPT")
+	if scriptPath == "" {
+		scriptPath = "python/train_rmi.py"
+	}
+	cmd := exec.Command("python3", scriptPath, "--input", keysPath, "--output", outLiPath)
+	cmd.Dir = filepath.Join(hs.conf.Storage.Path, "..")
+	if err := cmd.Run(); err != nil {
+		log.Printf("[Python RMI] train failed: %v", err)
+		return
+	}
+	hs.hotReloadLearnedIndex(shard, outLiPath)
+}
+
+// hotReloadLearnedIndex loads Python-output .li (JSON) and sets it as the shard's CBO model.
+func (hs *HybridStore) hotReloadLearnedIndex(shard *Shard, liPath string) {
+	m, err := indexlearned.LoadFromJSON(liPath)
+	if err != nil {
+		log.Printf("[Python RMI] load %s failed: %v", liPath, err)
+		return
+	}
+	shard.mutex.Lock()
+	shard.cboModel = m
+	shard.mutex.Unlock()
+	log.Printf("[Python RMI] hot-reloaded shard %d from %s", shard.id, liPath)
 }
 
 func (hs *HybridStore) compactShard(shard *Shard) {
@@ -329,6 +434,9 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 		return
 	}
 	defer shard.compactionLock.Unlock()
+
+	hs.backupMu.Lock()
+	defer hs.backupMu.Unlock()
 
 	shard.mutex.RLock()
 	inputTables := make([]*sstable.SSTable, len(shard.l0SSTables))
@@ -418,6 +526,7 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 	shard.mutex.Unlock()
 
 	hs.rebuildLearnedIndexFromSSTables(shard)
+	go hs.triggerPythonTraining(shard, outPath)
 
 	log.Printf("[Compaction] Shard %d: Merged %d -> 1 files. Disk cleaned.", shard.id, len(inputTables))
 	for _, old := range inputTables {
@@ -572,7 +681,7 @@ func (hs *HybridStore) recoverFromWAL() int {
 		wg.Add(1)
 		go func(idx int, data []common.Record) {
 			defer wg.Done()
-			li := learned.Build(data)
+			li := corelearned.Build(data)
 			hs.shards[idx].learnedIndexes = append(hs.shards[idx].learnedIndexes, li)
 		}(i, shardData[i])
 	}
@@ -634,8 +743,8 @@ func (hs *HybridStore) checkpointAndTruncateWAL() error {
 		shard.mutex.Lock()
 		shard.l1SSTables = append(shard.l1SSTables, newSST)
 		shard.rebuildSSTableViewLocked()
-		li := learned.Build(records)
-		shard.learnedIndexes = []*learned.LearnedIndex{li}
+		li := corelearned.Build(records)
+		shard.learnedIndexes = []*corelearned.LearnedIndex{li}
 		shard.mutex.Unlock()
 		hs.persistLearnedIndex(shard, li)
 		checkpointed++
@@ -769,8 +878,8 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 	}
 }
 
-func (hs *HybridStore) ExportModelData() ([]learned.DiagnosticPoint, error) {
-	var allPoints []learned.DiagnosticPoint
+func (hs *HybridStore) ExportModelData() ([]corelearned.DiagnosticPoint, error) {
+	var allPoints []corelearned.DiagnosticPoint
 
 	for _, shard := range hs.shards {
 		shard.mutex.RLock()
@@ -814,7 +923,7 @@ func (hs *HybridStore) Reset() error {
 		}
 
 		shard.mutableMem = memory.NewMemTable(32)
-		shard.learnedIndexes = make([]*learned.LearnedIndex, 0)
+		shard.learnedIndexes = make([]*corelearned.LearnedIndex, 0)
 		shard.l0SSTables = make([]*sstable.SSTable, 0)
 		shard.l1SSTables = make([]*sstable.SSTable, 0)
 		shard.sstables = make([]*sstable.SSTable, 0)

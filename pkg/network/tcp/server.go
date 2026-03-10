@@ -11,17 +11,17 @@ import (
 	"neurodb/pkg/protocol"
 )
 
-// Server 为自定义二进制协议 TCP 服务端（原 tcp_server.go 逻辑）。
+// Server is the custom binary-protocol TCP server (logic from tcp_server.go).
 type Server struct {
 	store *core.HybridStore
 }
 
-// NewServer 创建 TCP 协议服务。
+// NewServer creates the TCP protocol server.
 func NewServer(store *core.HybridStore) *Server {
 	return &Server{store: store}
 }
 
-// Start 在指定地址监听并处理连接。
+// Start listens on the given address and handles connections.
 func (s *Server) Start(addr string) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
