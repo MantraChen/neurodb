@@ -8,7 +8,7 @@ import (
 	"neurodb/pkg/api"
 	"neurodb/pkg/config"
 	"neurodb/pkg/core"
-	"neurodb/pkg/network"
+	"neurodb/pkg/network/tcp"
 	"os"
 	"os/signal"
 	"syscall"
@@ -45,8 +45,8 @@ func main() {
 		}
 	}()
 
-	// TCP Server
-	tcpServer := network.NewTCPServer(store)
+	// TCP Server (自定义二进制协议)
+	tcpServer := tcp.NewServer(store)
 	go func() {
 		if err := tcpServer.Start(cfg.Server.TCPAddr); err != nil {
 			log.Fatalf("[TCP] Server failed: %v", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"neurodb/pkg/common"
+	"neurodb/pkg/index/learned"
 	"os"
 	"sort"
 )
@@ -15,6 +16,7 @@ type SSTable struct {
 	indexKeys    []common.KeyType
 	indexOffsets []int64
 	Filename     string
+	rmiModel     *learned.RMISnapshot
 }
 
 func Open(filename string) (*SSTable, error) {
@@ -26,19 +28,30 @@ func Open(filename string) (*SSTable, error) {
 	stat, _ := f.Stat()
 	size := stat.Size()
 
-	if size < 16 {
+	if size < FooterSize {
 		return nil, errors.New("sstable: file too small")
 	}
 
-	footer := make([]byte, 16)
-	if _, err := f.ReadAt(footer, size-16); err != nil {
+	// 兼容旧格式(16 字节 footer)与新格式(24 字节 footer + RMI)。先读最后 24 字节。
+	footer24 := make([]byte, FooterSizeRMI)
+	if _, err := f.ReadAt(footer24, size-FooterSizeRMI); err != nil {
 		return nil, err
 	}
+	magicAt8 := int64(binary.LittleEndian.Uint64(footer24[8:16]))
+	magicAt16 := int64(binary.LittleEndian.Uint64(footer24[16:24]))
 
-	indexOffset := int64(binary.LittleEndian.Uint64(footer[0:8]))
-	magic := int64(binary.LittleEndian.Uint64(footer[8:16]))
+	var indexOffset, rmiOffset int64
+	var hasRMI bool
 
-	if magic != MagicNumber {
+	if magicAt8 == MagicNumberRMI {
+		// 新格式：footer 24 字节 = indexStart(8) + magic(8) + rmiOffset(8)
+		indexOffset = int64(binary.LittleEndian.Uint64(footer24[0:8]))
+		rmiOffset = int64(binary.LittleEndian.Uint64(footer24[16:24]))
+		hasRMI = true
+	} else if magicAt16 == MagicNumber {
+		// 旧格式：最后 16 字节 = indexStart(8) + magic(8)，即 footer24[8:24]
+		indexOffset = int64(binary.LittleEndian.Uint64(footer24[8:16]))
+	} else {
 		return nil, errors.New("sstable: invalid magic number")
 	}
 
@@ -67,23 +80,56 @@ func Open(filename string) (*SSTable, error) {
 		offsets[i] = off
 	}
 
+	var rmiModel *learned.RMISnapshot
+	if hasRMI && rmiOffset > 0 && rmiOffset < size-FooterSizeRMI {
+		if _, err := f.Seek(rmiOffset, 0); err == nil {
+			var rmiLen uint32
+			if err := binary.Read(f, binary.LittleEndian, &rmiLen); err == nil && rmiLen > 0 && rmiLen < 1<<20 {
+				rmiBytes := make([]byte, rmiLen)
+				if _, err := io.ReadFull(f, rmiBytes); err == nil {
+					snap := &learned.RMISnapshot{}
+					if snap.UnmarshalBinary(rmiBytes) == nil {
+						rmiModel = snap
+					}
+				}
+			}
+		}
+	}
+
 	return &SSTable{
 		file:         f,
 		fileSize:     size,
 		indexKeys:    keys,
 		indexOffsets: offsets,
 		Filename:     filename,
+		rmiModel:     rmiModel,
 	}, nil
 }
 
 func (t *SSTable) Get(key common.KeyType) (common.ValueType, bool) {
-	idx := sort.Search(len(t.indexKeys), func(i int) bool {
-		return t.indexKeys[i] > key
-	})
-
-	startIdx := idx - 1
-	if startIdx < 0 {
-		startIdx = 0
+	var startIdx int
+	if t.rmiModel != nil && len(t.indexKeys) > 0 {
+		pred := t.rmiModel.Predict(key)
+		minE, maxE := t.rmiModel.ErrorBound()
+		low := pred + minE
+		high := pred + maxE
+		if low < 0 {
+			low = 0
+		}
+		if high >= len(t.indexOffsets) {
+			high = len(t.indexOffsets) - 1
+		}
+		if low <= high {
+			startIdx = low
+		}
+	} else {
+		idx := sort.Search(len(t.indexKeys), func(i int) bool {
+			return t.indexKeys[i] > key
+		})
+		startIdx = idx - 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
 	}
 
 	offset := t.indexOffsets[startIdx]
@@ -92,7 +138,6 @@ func (t *SSTable) Get(key common.KeyType) (common.ValueType, bool) {
 	}
 
 	for {
-
 		var k int64
 		if err := binary.Read(t.file, binary.LittleEndian, &k); err != nil {
 			break

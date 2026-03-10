@@ -1,35 +1,35 @@
-# NeuroDB: High-Performance Spatial-Aware Learned Index Engine
+# NeuroDB: An Adaptive, Learned-Index Powered Relational Database Engine
 
 ![Build Status](https://img.shields.io/badge/build-passing-success)
 ![Go Version](https://img.shields.io/badge/go-1.24-blue)
 ![Architecture](https://img.shields.io/badge/arch-LSM%20%2B%20SSTable-blueviolet)
-![Protocol](https://img.shields.io/badge/protocol-TCP%20Binary-orange)
+![Protocol](https://img.shields.io/badge/protocol-TCP%20%7C%20MySQL-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-**NeuroDB** is a next-generation key-value storage engine designed for **Metaverse** and **High-Frequency Motion Capture** workloads. It implements a full **LSM-Tree (Log-Structured Merge Tree)** architecture from scratch, bridging the gap between traditional disk-based storage and cutting-edge **Learned Index** technology.
+**NeuroDB** is an adaptive relational database kernel that combines **LSM-Tree** storage with **Learned Index (RMI)** technology. It emphasizes low read/write amplification, compact storage, and fast range scans through an AI-augmented storage and query stack.
 
-> **v2.9 Release**: Leveled LSM (`L0/L1`), startup checkpoint + WAL truncate, persisted Learned Index (`.li`), Prometheus `/metrics`, backup/restore API, SQL `WHERE id ...` and `LIMIT`, plus dashboard and test hardening.
+> **Architecture highlights**: **AI-Driven Query Optimizer** (RMI-based CBO cost estimation), **Learned SSTable** (RMI at SSTable level replacing traditional block index), **MVCC-friendly design** (InternalKey and lock-free concurrency-oriented structures).
 
 ---
 
 ## Key Features
 
 ### 1. Industrial-Grade Storage Engine (LSM-Tree)
-* **Write-Ahead Log (WAL)**: Ensures data durability. Writes are appended to WAL with CRC32 checksums.
-* **MemTable**: Sharded in-memory B-Tree acts as a high-throughput write buffer.
-* **Leveled SSTables (`L0/L1`)**: Flush goes to `L0`, then background compaction merges `L0 -> L1`.
-* **Startup Checkpoint + WAL Truncate**: Rebuilds durable checkpoints and controls replay time/disk growth.
-* **Tombstone Deletes**: logical deletion support with garbage collection during compaction.
+* **Write-Ahead Log (WAL)**: Ensures data durability; writes appended with CRC32 checksums.
+* **MemTable**: Sharded in-memory structure as write buffer; design is compatible with **MVCC** (InternalKey: UserKey + SeqNum for versioning and lock-free reads).
+* **Leveled SSTables (`L0/L1`)**: Flush to `L0`, background compaction to `L1`; **Learned SSTable**: each SSTable can carry an RMI in the footer for direct point/range lookup without full index block scan.
+* **Startup Checkpoint + WAL Truncate**: Durable checkpoints and controlled replay/disk growth.
+* **Tombstone Deletes**: Logical deletion with GC during compaction.
 
 ### 2. High-Performance Networking
-* **Binary TCP Protocol**: Custom lightweight protocol supporting `Put`, `Get`, `Delete`, and `Scan`.
-* **Zero-Copy Serialization**: Efficient encoding/decoding for high-throughput motion data streams.
+* **Binary TCP Protocol** (`pkg/network/tcp`): Custom lightweight protocol for `Put`, `Get`, `Delete`, and `Scan`.
+* **MySQL Wire Protocol** (`pkg/network/mysql`): Standard protocol gateway for ecosystem compatibility; SQL is forwarded to the kernel and results returned as Resultset.
 * **Resilient SDK**: Go client with automatic reconnection and retry policies.
 
-### 3. Spatial & AI Intelligence
-* **Z-Order Curve**: Maps 3D $(x, y, z)$ coordinates to 1D keys for spatial locality.
-* **Learned Index (RMI)**: Replaces traditional B-Trees/Bloom Filters in read path, using Recursive Model Indexes to predict data location with $O(1)$ theoretical complexity.
-* **RMI Persistence**: Learned indexes are persisted as `.li` files and loaded on restart when SST signature matches.
+### 3. AI & Index Intelligence
+* **Learned Index (RMI)**: Recursive Model Index for $O(1)$-style lookup and range scan; used both at global layer and **per-SSTable** (Learned SSTable replaces traditional block index in read path).
+* **AI-Driven Query Optimizer (CBO)**: RMI’s CDF property enables O(1) row count estimation for range scans; optimizer chooses full table scan vs primary key range scan based on cost.
+* **Spatial / Z-Order** (`pkg/index/spatial`): Generic multi-dimensional Z-Order encoder for joint indexes (e.g. `CREATE INDEX idx_location ON table (lat, lon)`); RMI then indexes the 1D code.
 
 ### 4. SQL Layer
 * **SELECT \* FROM table [WHERE id <op> <int>] [LIMIT n]**.
@@ -144,48 +144,50 @@ func main() {
 [ Client Application ]
        |
        v
-[ TCP / HTTP Gateway ]
+[ TCP / HTTP / MySQL Gateway ]
        |
-       +---> [ Write-Ahead Log (WAL) ] (Append-Only Disk Persistence)
+       +---> [ WAL ] (Durability)
+       v
+[ Sharded MemTable (MVCC-ready) ] <-- [ Global RMI ]
+       |
+       v (Flush)
+[ SSTables (per-file RMI in footer) ]  Learned SSTable
+       L0 -> L1 (Leveled Compaction)
        |
        v
-[ Sharded MemTable (RAM) ] <--- [ Learned Index Model ] (AI Acceleration)
-       |
-       | (Flush when full)
-       v
-[ SSTables (Disk) ]
-[ L0 ] [ L0 ] ...
-       |
-       | (Leveled Compaction)
-       v
-[ L1 ]
-       |
-       +---> [ Persisted Learned Index (.li) ]
+[ CBO Optimizer ] uses RMI for range row estimation -> [ Executor ]
 ```
 
 ## Project Structure
 ```Plaintext
-├── cmd/
-│   ├── server/      # Database Kernel Entry
-│   ├── cli/         # Interactive Command Line Tool
-│   ├── benchmark/   # HTTP vs TCP Performance Test
-│   └── example/     # SDK Usage Example
+├── cmd/server/           # Database Kernel Entry
 ├── pkg/
-│   ├── client/      # Go SDK (TCP Driver)
-│   ├── core/        # HybridStore (LSM Logic, Compaction)
-│   ├── protocol/    # Binary Protocol Spec
-│   ├── sql/         # SQL Parser (SELECT + WHERE id + LIMIT)
-│   ├── storage/     # WAL & SSTable Implementation
-│   ├── common/      # Spatial (Z-Order) Utils
-│   └── core/learned/# RMI Model Logic
-└── static/          # Web Console (HTML/JS)
+│   ├── sql/              # SQL 核心与优化
+│   │   ├── ast/          # 抽象语法树节点
+│   │   ├── parser/       # 当前正则解析 (可扩展为 goyacc 等)
+│   │   ├── optimizer/    # 基于 RMI 的 CBO 代价估算
+│   │   └── executor/     # 物理计划执行
+│   ├── storage/
+│   │   ├── mvcc/         # InternalKey、多版本并发控制相关类型
+│   │   ├── sstable/      # SSTable + Learned Index 下推
+│   │   └── wal/
+│   ├── index/
+│   │   ├── learned/      # RMI 模型训练/预测与 SSTable 用 RMISnapshot
+│   │   └── spatial/      # 通用 Z-Order 降维插件
+│   ├── network/
+│   │   ├── mysql/        # MySQL Wire Protocol 网关
+│   │   └── tcp/          # 自定义二进制协议
+│   ├── core/             # HybridStore (LSM 逻辑、Compaction)
+│   ├── client/           # Go SDK
+│   └── common/           # 公共类型与 3D Z-Order 兼容
+└── static/               # Web Console (HTML/JS)
 ```
 
 ## Citation
 
 If you use NeuroDB in your research, please cite:
 
-> *NeuroDB: An Adaptive Learned Index Storage Engine for High-Dimensional Motion Data.*
+> *NeuroDB: An Adaptive, Learned-Index Powered Relational Database Engine.*
 
 ## License
 
