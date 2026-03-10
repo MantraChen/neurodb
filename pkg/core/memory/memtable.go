@@ -8,8 +8,9 @@ import (
 )
 
 type Item struct {
-	Key common.KeyType
-	Val common.ValueType
+	Key    common.KeyType
+	Val    common.ValueType
+	SeqNum uint64 // MVCC: version for snapshot isolation
 }
 
 func (i Item) Less(than btree.Item) bool {
@@ -49,16 +50,17 @@ func (smt *MemTable) getShard(key common.KeyType) *shard {
 	return smt.shards[idx]
 }
 
-func (smt *MemTable) Put(key common.KeyType, val common.ValueType) {
+func (smt *MemTable) Put(key common.KeyType, val common.ValueType, seqNum uint64) {
 	s := smt.getShard(key)
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	item := Item{Key: key, Val: val}
+	item := Item{Key: key, Val: val, SeqNum: seqNum}
 	s.tree.ReplaceOrInsert(item)
 	s.size += 8 + len(val)
 }
 
+// Get returns the latest value for key (any version).
 func (smt *MemTable) Get(key common.KeyType) (common.ValueType, bool) {
 	s := smt.getShard(key)
 	s.lock.RLock()
@@ -70,6 +72,24 @@ func (smt *MemTable) Get(key common.KeyType) (common.ValueType, bool) {
 		return nil, false
 	}
 	return res.(Item).Val, true
+}
+
+// GetWithReadView returns value for key if the stored version is visible to readView (SeqNum <= readView). Used for snapshot isolation.
+func (smt *MemTable) GetWithReadView(key common.KeyType, readView uint64) (common.ValueType, bool) {
+	s := smt.getShard(key)
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+
+	item := Item{Key: key}
+	res := s.tree.Get(item)
+	if res == nil {
+		return nil, false
+	}
+	it := res.(Item)
+	if it.SeqNum > readView {
+		return nil, false
+	}
+	return it.Val, true
 }
 
 func (smt *MemTable) Size() int {
@@ -92,12 +112,12 @@ func (smt *MemTable) Count() int {
 	return total
 }
 
-func (smt *MemTable) Iterator(fn func(key common.KeyType, val common.ValueType) bool) {
+func (smt *MemTable) Iterator(fn func(key common.KeyType, val common.ValueType, seqNum uint64) bool) {
 	for _, s := range smt.shards {
 		s.lock.RLock()
 		s.tree.Ascend(func(i btree.Item) bool {
 			item := i.(Item)
-			return fn(item.Key, item.Val)
+			return fn(item.Key, item.Val, item.SeqNum)
 		})
 		s.lock.RUnlock()
 	}

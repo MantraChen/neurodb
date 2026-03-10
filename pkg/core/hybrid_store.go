@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -66,6 +67,10 @@ type HybridStore struct {
 	wg       sync.WaitGroup
 	conf     *config.Config
 	backupMu sync.RWMutex
+	// MVCC: global sequence number; incremented on every Put/Delete. Used for read view (snapshot isolation).
+	seqNum atomic.Uint64
+	// oldestActiveReadView: only versions with SeqNum < this can be GC'd during compaction. 0 = no GC.
+	oldestActiveReadView atomic.Uint64
 }
 
 func NewHybridStore(cfg *config.Config) *HybridStore {
@@ -147,9 +152,27 @@ func (hs *HybridStore) BackupSnapshot() (sstPaths, liPaths []string, release fun
 	return sstPaths, liPaths, release
 }
 
+// nextSeqNum returns a new global sequence number for MVCC (snapshot isolation).
+func (hs *HybridStore) nextSeqNum() uint64 {
+	return hs.seqNum.Add(1)
+}
+
+// CurrentSeqNum returns the current read view (latest committed sequence). Used for snapshot isolation.
+func (hs *HybridStore) CurrentSeqNum() uint64 {
+	return hs.seqNum.Load()
+}
+
+// SetOldestActiveReadView sets the oldest active transaction/query read view. During compaction,
+// only versions with SeqNum < oldestActiveReadView (and tombstones below it) can be physically removed.
+// 0 = no GC of old versions. Call this when starting a transaction (register) and when ending (unregister).
+func (hs *HybridStore) SetOldestActiveReadView(watermark uint64) {
+	hs.oldestActiveReadView.Store(watermark)
+}
+
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	hs.stats.RecordWrite()
-	rec := common.Record{Key: key, Value: val}
+	seq := hs.nextSeqNum()
+	rec := common.Record{Key: key, Value: val, SeqNum: seq}
 	select {
 	case hs.writeCh <- rec:
 	default:
@@ -161,7 +184,7 @@ func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {
 	defer shard.mutex.Unlock()
 
 	shard.bloom.Add(key)
-	shard.mutableMem.Put(key, val)
+	shard.mutableMem.Put(key, val, seq)
 
 	if shard.mutableMem.Count() >= hs.conf.Storage.MemTableFlushThreshold {
 		hs.adaptiveFlush(shard)
@@ -172,7 +195,15 @@ func (hs *HybridStore) Delete(key common.KeyType) {
 	hs.Put(key, []byte{})
 }
 
+// Get returns the value for key visible to the current read view (snapshot isolation).
+// Read view = current global SeqNum; MemTable entries with SeqNum > readView are filtered out.
+// SST/Learned index currently store a single version per key (committed state), so they are always visible.
 func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
+	return hs.GetWithReadView(key, hs.CurrentSeqNum())
+}
+
+// GetWithReadView returns value for key visible to the given readView (SeqNum <= readView). Used for snapshot isolation.
+func (hs *HybridStore) GetWithReadView(key common.KeyType, readView uint64) (common.ValueType, bool) {
 	hs.stats.RecordRead()
 	shard := hs.getShard(key)
 	shard.mutex.RLock()
@@ -182,7 +213,8 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 		return nil, false
 	}
 
-	if val, ok := shard.mutableMem.Get(key); ok {
+	// MemTable: only visible if entry.SeqNum <= readView
+	if val, ok := shard.mutableMem.GetWithReadView(key, readView); ok {
 		if len(val) == 0 {
 			return nil, false
 		}
@@ -190,7 +222,7 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 		return val, true
 	}
 
-	// Check Learned Indexes (Recent Immutable)
+	// Learned indexes and SSTables: single version per key (committed); visible to any readView
 	for i := len(shard.learnedIndexes) - 1; i >= 0; i-- {
 		if val, ok := shard.learnedIndexes[i].Get(key); ok {
 			if len(val) == 0 {
@@ -199,8 +231,6 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 			return val, true
 		}
 	}
-
-	// Check SSTables (Disk Persistence)
 	for i := len(shard.sstables) - 1; i >= 0; i-- {
 		if val, ok := shard.sstables[i].Get(key); ok {
 			if len(val) == 0 {
@@ -209,7 +239,6 @@ func (hs *HybridStore) Get(key common.KeyType) (common.ValueType, bool) {
 			return val, true
 		}
 	}
-
 	return nil, false
 }
 
@@ -220,7 +249,7 @@ func (hs *HybridStore) adaptiveFlush(shard *Shard) {
 	}
 
 	var data []common.Record
-	shard.mutableMem.Iterator(func(key common.KeyType, val common.ValueType) bool {
+	shard.mutableMem.Iterator(func(key common.KeyType, val common.ValueType, _ uint64) bool {
 		data = append(data, common.Record{Key: key, Value: val})
 		return true
 	})
@@ -702,9 +731,13 @@ func (hs *HybridStore) restoreSSTables() {
 
 func (hs *HybridStore) recoverFromWAL() int {
 	log.Println("[NeuroDB] Replaying WAL...")
-	records, err := hs.backend.LoadAll()
+	records, maxSeq, err := hs.backend.LoadAll()
 	if err != nil {
 		return 0
+	}
+	// MVCC: next write will use maxSeq+1
+	if maxSeq > 0 {
+		hs.seqNum.Store(maxSeq)
 	}
 
 	shardData := make([][]common.Record, hs.conf.System.ShardCount)

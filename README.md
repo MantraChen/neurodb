@@ -15,11 +15,11 @@
 ## Key Features
 
 ### 1. Industrial-Grade Storage Engine (LSM-Tree)
-* **Write-Ahead Log (WAL)**: Ensures data durability; writes appended with CRC32 checksums.
-* **MemTable**: Sharded in-memory structure as write buffer; design is compatible with **MVCC** (InternalKey: UserKey + SeqNum for versioning and lock-free reads).
+* **Write-Ahead Log (WAL)**: Ensures data durability; writes appended with CRC32 checksums; v1 format persists **SeqNum** for MVCC replay.
+* **MemTable**: Sharded in-memory structure as write buffer; each entry carries **SeqNum** (global version). **Read view**: `Get` uses current global SeqNum and filters out MemTable entries with `SeqNum > readView` (snapshot isolation for in-memory state).
 * **Leveled SSTables (`L0/L1`)**: Flush to `L0`, background compaction to `L1`; **Learned SSTable**: each SSTable can carry an RMI in the footer for direct point/range lookup without full index block scan.
-* **Startup Checkpoint + WAL Truncate**: Durable checkpoints and controlled replay/disk growth.
-* **Tombstone Deletes**: Logical deletion with GC during compaction.
+* **Startup Checkpoint + WAL Truncate**: Durable checkpoints and controlled replay/disk growth. Replay restores **maxSeq** so the next write uses the correct version.
+* **Tombstone Deletes**: Logical deletion with GC during compaction. **GC watermark**: `SetOldestActiveReadView(watermark)` — only versions with `SeqNum < watermark` can be physically removed (for future transaction boundaries).
 
 ### 2. High-Performance Networking
 * **Binary TCP Protocol** (`pkg/network/tcp`): Custom lightweight protocol for `Put`, `Get`, `Delete`, and `Scan`.
@@ -186,6 +186,13 @@ func main() {
 
 **Error bounds (no global fallback)**  
 Learned Index point lookup and range scan do **not** search the full array. After the model predicts a position `pos`, Go restricts the binary search to the slice `[pos - min_error, pos + max_error]` (per-leaf bounds when available). This keeps latency low and breaks the 0.7x bottleneck. Optional env `NEURODB_PYTHON_SCRIPT` overrides the trainer script path.
+
+## Roadmap (design notes)
+
+* **Phase 1 (done)**: Global SeqNum, MemTable + read view, WAL v1 with SeqNum, GC watermark placeholder. SST/Learned index still single version per key (committed state visible to all).
+* **Phase 2**: Leveled compaction L1→L2→L3…; cascading RMI training (async lagged training for deep levels, hot-reload when ready).
+* **Phase 3**: WAL transaction boundaries (BEGIN_TX, COMMIT_TX, ROLLBACK_TX); crash recovery undo for pending transactions; group commit.
+* **Phase 4**: ACID transaction API (BEGIN/COMMIT/ROLLBACK in SQL and Go SDK); register/unregister read view for GC.
 
 ## Citation
 

@@ -9,8 +9,9 @@ type KeyType int64
 type ValueType []byte
 
 type Record struct {
-	Key   KeyType
-	Value ValueType
+	Key    KeyType
+	Value  ValueType
+	SeqNum uint64 // MVCC: global sequence number; 0 = legacy (no version)
 }
 
 func (r *Record) String() string {
