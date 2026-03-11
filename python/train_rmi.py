@@ -12,6 +12,17 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from sklearn.neural_network import MLPRegressor
+
+
+def _linearize_predictions(keys_1d, predictions, lr_fallback=True):
+    """Fit linear (slope, intercept) to (keys, predictions). Keeps .li format; reduces error vs raw linear on data."""
+    keys_1d = np.asarray(keys_1d, dtype=np.float64).reshape(-1, 1)
+    pred = np.asarray(predictions, dtype=np.float64)
+    if lr_fallback and (len(keys_1d) < 2 or (pred.size > 0 and np.all(pred == pred.flat[0]))):
+        return 0.0, float(pred.flat[0]) if pred.size else 0.0
+    lr = LinearRegression().fit(keys_1d, pred)
+    return float(lr.coef_[0]), float(lr.intercept_)
 
 
 def train_rmi(keys: np.ndarray, fanout: int = 256):
@@ -47,12 +58,14 @@ def train_rmi(keys: np.ndarray, fanout: int = 256):
         ((keys - key_min) / key_range * fanout).astype(int), 0, fanout - 1
     )
 
-    # Root model: key -> bucket index (0..fanout-1)
-    root = LinearRegression().fit(
-        keys.reshape(-1, 1), bucket_indices.astype(np.float64)
-    )
-    root_slope = float(root.coef_[0])
-    root_intercept = float(root.intercept_)
+    # Root: nonlinear (MLP) key -> bucket index, then linearize for .li export
+    # early_stopping=False avoids "validation set too small" when splitting train/val
+    X = keys.reshape(-1, 1).astype(np.float64)
+    y_root = bucket_indices.astype(np.float64)
+    root_mlp = MLPRegressor(hidden_layer_sizes=(64, 32), max_iter=400, random_state=42, early_stopping=False)
+    root_mlp.fit(X, y_root)
+    root_pred = root_mlp.predict(X)
+    root_slope, root_intercept = _linearize_predictions(keys, root_pred, lr_fallback=True)
 
     # Build per-bucket key lists and local positions (0, 1, 2, ... within bucket)
     bucket_keys = [[] for _ in range(fanout)]
@@ -80,14 +93,23 @@ def train_rmi(keys: np.ndarray, fanout: int = 256):
             per_leaf_min_err.append(0)
             per_leaf_max_err.append(0)
             continue
-        leaf = LinearRegression().fit(bk.reshape(-1, 1), bp.astype(np.float64))
-        leaves.append({
-            "slope": float(leaf.coef_[0]),
-            "intercept": float(leaf.intercept_),
-        })
-        # Per-leaf error: real local pos - predicted local pos
-        pred_local = leaf.predict(bk.reshape(-1, 1))
-        errs = bp - np.round(pred_local).astype(int)
+        Xb = bk.reshape(-1, 1).astype(np.float64)
+        yb = bp.astype(np.float64)
+        # Small buckets: use LinearRegression to avoid MLP "validation set too small" (early_stopping needs many samples)
+        min_samples_mlp = 10
+        if len(bk) < min_samples_mlp:
+            lr = LinearRegression().fit(Xb, yb)
+            slope_leaf = float(lr.coef_[0])
+            intercept_leaf = float(lr.intercept_)
+        else:
+            # Nonlinear leaf: MLP key -> local pos, then linearize for .li. early_stopping=False avoids validation split.
+            leaf_mlp = MLPRegressor(hidden_layer_sizes=(32, 16), max_iter=300, random_state=42 + b, early_stopping=False)
+            leaf_mlp.fit(Xb, yb)
+            pred_local = leaf_mlp.predict(Xb)
+            slope_leaf, intercept_leaf = _linearize_predictions(bk, pred_local, lr_fallback=True)
+        leaves.append({"slope": slope_leaf, "intercept": intercept_leaf})
+        pred_lin = slope_leaf * bk.astype(np.float64) + intercept_leaf
+        errs = bp - np.round(pred_lin).astype(int)
         per_leaf_min_err.append(int(np.min(errs)))
         per_leaf_max_err.append(int(np.max(errs)))
 
@@ -100,7 +122,6 @@ def train_rmi(keys: np.ndarray, fanout: int = 256):
             continue
         leaf = leaves[b]
         local_pred = leaf["slope"] * key_f + leaf["intercept"]
-        global_pred = bucket_starts[b] + int(round(local_pred))
         err = i - global_pred
         min_err = min(min_err, err)
         max_err = max(max_err, err)

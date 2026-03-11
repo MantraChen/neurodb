@@ -22,11 +22,12 @@ import (
 )
 
 type Server struct {
-	store       *core.HybridStore
-	ingestCount atomic.Int64
-	sessionMu   sync.Mutex
-	sessions    map[string]*core.Tx
-	sessionSeq  atomic.Uint64
+	store         *core.HybridStore
+	ingestCount   atomic.Int64
+	sessionMu     sync.Mutex
+	sessions      map[string]*core.Tx
+	sessionSeq    atomic.Uint64
+	trainRMIAllMu sync.Mutex // guards TriggerPythonTraining(-1) to avoid overlapping full training
 }
 
 func NewServer(store *core.HybridStore) *Server {
@@ -234,6 +235,15 @@ func (s *Server) handleTrainRMI(w http.ResponseWriter, r *http.Request) {
 			shardID = id
 		}
 	}
+	// When training all shards (-1), allow only one run at a time to avoid repeated triggers (e.g. double-click)
+	if shardID < 0 {
+		if !s.trainRMIAllMu.TryLock() {
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]string{"error": "RMI training already in progress (wait for current run to finish)"})
+			return
+		}
+		defer s.trainRMIAllMu.Unlock()
+	}
 	if err := s.store.TriggerPythonTraining(shardID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -352,23 +362,32 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	s.ingestCount.Store(0)
 
-	go func() {
-		log.Println("[API] Starting randomized auto-ingestion...")
-		currentKey := rand.Intn(1000000)
-		count := 100000
+	count := 100000
+	if n := r.URL.Query().Get("count"); n != "" {
+		if v, err := strconv.Atoi(n); err == nil && v > 0 {
+			if v > 10_000_000 {
+				v = 10_000_000
+			}
+			count = v
+		}
+	}
 
-		for i := 0; i < count; i++ {
+	finalCount := count
+	go func() {
+		log.Printf("[API] Starting randomized auto-ingestion (count=%d)...", finalCount)
+		currentKey := rand.Intn(1000000)
+		for i := 0; i < finalCount; i++ {
 			step := rand.Intn(5) + 1
 			currentKey += step
 			val := fmt.Sprintf("neuro-data-%d", currentKey)
 			s.store.Put(common.KeyType(currentKey), []byte(val))
 
 			s.ingestCount.Add(1)
-			if i%1000 == 0 {
-				time.Sleep(1 * time.Millisecond)
+			if i%10000 == 0 && i > 0 {
+				time.Sleep(2 * time.Millisecond)
 			}
 		}
-		log.Printf("[API] Ingest complete. Last Key: %d", currentKey)
+		log.Printf("[API] Ingest complete. Total: %d, Last Key: %d", finalCount, currentKey)
 	}()
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Ingestion Started"))

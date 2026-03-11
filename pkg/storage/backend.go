@@ -95,6 +95,7 @@ func (d *DiskBackend) LoadAll() ([]common.Record, uint64, error) {
 	var lastCommitEnd int64
 	count := 0
 	var maxSeq uint64
+	var v0Seq uint64 // v0 has no SeqNum in log; assign logical seq so recovery does not reset to 0
 
 	for {
 		rec, err := it.Next()
@@ -119,13 +120,14 @@ func (d *DiskBackend) LoadAll() ([]common.Record, uint64, error) {
 		count++
 
 		if !it.v1 {
-			// v0: no transaction boundaries; apply every record immediately
-			if rec.SeqNum > maxSeq {
-				maxSeq = rec.SeqNum
+			// v0: no SeqNum in format; assign logical seq so maxSeq advances and MVCC does not reset to 0
+			v0Seq++
+			if v0Seq > maxSeq {
+				maxSeq = v0Seq
 			}
 			existing, ok := tempMap[rec.Key]
-			if !ok || rec.SeqNum >= existing.seq {
-				tempMap[rec.Key] = valSeq{val: rec.Value, seq: rec.SeqNum}
+			if !ok || v0Seq >= existing.seq {
+				tempMap[rec.Key] = valSeq{val: rec.Value, seq: v0Seq}
 			}
 			continue
 		}

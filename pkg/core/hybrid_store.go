@@ -72,6 +72,8 @@ type HybridStore struct {
 	// oldestActiveReadView: only versions with SeqNum < this can be GC'd during compaction. 0 = no GC.
 	oldestActiveReadView atomic.Uint64
 	txManager            *TxManager
+	// lastPythonTrainNano: per-shard last compaction-triggered Python training time (Unix nano). Throttle repeated training.
+	lastPythonTrainNano []atomic.Uint64
 }
 
 func NewHybridStore(cfg *config.Config) *HybridStore {
@@ -81,13 +83,14 @@ func NewHybridStore(cfg *config.Config) *HybridStore {
 
 	walPath := filepath.Join(cfg.Storage.Path, "neuro.db")
 	hs := &HybridStore{
-		backend:  storage.NewDiskBackend(walPath),
-		stats:    monitor.NewWorkloadStats(),
-		writeCh:  make(chan common.Record, cfg.Storage.WalBufferSize),
-		closeCh:  make(chan struct{}),
-		shards:   make([]*Shard, cfg.System.ShardCount),
-		conf:     cfg,
-		txManager: newTxManager(),
+		backend:             storage.NewDiskBackend(walPath),
+		stats:               monitor.NewWorkloadStats(),
+		writeCh:             make(chan common.Record, cfg.Storage.WalBufferSize),
+		closeCh:             make(chan struct{}),
+		shards:              make([]*Shard, cfg.System.ShardCount),
+		conf:                cfg,
+		txManager:           newTxManager(),
+		lastPythonTrainNano: make([]atomic.Uint64, cfg.System.ShardCount),
 	}
 
 	for i := 0; i < cfg.System.ShardCount; i++ {
@@ -512,6 +515,7 @@ func (hs *HybridStore) triggerPythonTraining(shard *Shard, _ string) error {
 	if len(records) == 0 {
 		return nil
 	}
+	hs.lastPythonTrainNano[shard.id].Store(uint64(time.Now().UnixNano()))
 	keysPath, err := hs.extractKeysToCSVFromRecords(records)
 	if err != nil {
 		log.Printf("[Python RMI] extractKeys failed: %v", err)
@@ -657,6 +661,14 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 
 	hs.rebuildLearnedIndexFromSSTables(shard)
 	go func() {
+		// Throttle: skip if this shard was trained recently (e.g. by compaction or manual run)
+		const throttleMin = 5 * time.Minute
+		last := hs.lastPythonTrainNano[shard.id].Load()
+		if last != 0 && time.Since(time.Unix(0, int64(last))) < throttleMin {
+			log.Printf("[Python RMI] shard %d: skip (trained %.0fs ago)", shard.id, time.Since(time.Unix(0, int64(last))).Seconds())
+			return
+		}
+		hs.lastPythonTrainNano[shard.id].Store(uint64(time.Now().UnixNano()))
 		if err := hs.triggerPythonTraining(shard, outPath); err != nil {
 			log.Printf("[Python RMI] background train failed: %v", err)
 		}
@@ -1079,7 +1091,6 @@ func (hs *HybridStore) Reset() error {
 	}
 
 	hs.stats = monitor.NewWorkloadStats()
-
 Loop:
 	for {
 		select {
