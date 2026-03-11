@@ -149,3 +149,10 @@ func (m *TxManager) MinActiveReadView() uint64 {
 	}
 	return min
 }
+
+// ActiveTxCount returns the number of distinct active transactions (registered read views).
+func (m *TxManager) ActiveTxCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.readViews)
+}

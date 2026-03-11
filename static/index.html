@@ -3,720 +3,274 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NeuroDB — High-Performance SQL Storage Engine with Learned Index</title>
+    <title>NeuroDB</title>
     <style>
-        :root {
-            /* Professional Dark Theme (GitHub / VScode Inspired) */
-            --bg-body: #0d1117;
-            --bg-panel: #161b22;
-            --bg-input: #010409;
-            --border: #30363d;
-            --border-active: #8b949e;
-            
-            --text-primary: #f0f6fc;
-            --text-secondary: #8b949e;
-            --text-tertiary: #6e7681;
-
-            --accent: #1f6feb;      /* Action Blue */
-            --success: #238636;     /* Stable Green */
-            --warning: #d29922;     /* Warn */
-            --danger: #da3633;      /* Destructive */
-            
-            --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        }
-
-        * { box-sizing: border-box; outline: none; }
-
+        * { box-sizing: border-box; }
         body {
-            background-color: var(--bg-body);
-            color: var(--text-primary);
-            font-family: var(--font-ui);
-            font-size: 13px;
             margin: 0;
-            padding: 20px;
-            line-height: 1.5;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-
-        /* Header */
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-bottom: 15px;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 20px;
-            flex-shrink: 0;
-        }
-
-        h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-primary); letter-spacing: -0.02em; }
-        .badge { font-family: var(--font-mono); font-size: 11px; background: var(--border); padding: 2px 6px; border-radius: 4px; color: var(--text-secondary); margin-left: 8px; }
-        .badge-live { color: var(--success); border: 1px solid var(--success); background: rgba(35, 134, 54, 0.1); }
-        
-        .status-indicator { display: flex; align-items: center; font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
-        .dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; margin-right: 6px; }
-
-        /* Metrics Grid - 6 columns */
-        .metrics {
-            display: grid;
-            grid-template-columns: repeat(6, 1fr); 
-            gap: 12px;
-            margin-bottom: 20px;
-            flex-shrink: 0;
-        }
-
-        .metric-card {
-            background: var(--bg-panel);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 12px 16px;
-        }
-
-        .metric-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; }
-        .metric-value { font-family: var(--font-mono); font-size: 20px; color: var(--text-primary); margin-top: 4px; }
-        .metric-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
-
-        /* Highlight Colors */
-        .val-queue { color: var(--warning); }
-        .val-sst { color: var(--accent); }
-
-        /* Main Layout */
-        .layout { display: flex; gap: 20px; flex: 1; min-height: 0; }
-        .col-left { width: 340px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 4px; }
-        .col-right { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow-y: auto; padding-right: 4px; }
-
-        /* Panels */
-        .panel {
-            background: var(--bg-panel);
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            padding: 16px;
-        }
-
-        .panel-title {
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        /* Inputs & Buttons */
-        .form-row { display: flex; gap: -1px; margin-bottom: 8px; }
-        .group-input input:first-child { border-top-right-radius: 4px; border-bottom-right-radius: 4px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
-        .group-input input:not(:first-child) { border-radius: 0; margin-left: -1px; }
-        .group-input button { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
-
-        input {
-            background: var(--bg-input);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 6px 10px;
-            font-family: var(--font-mono);
-            font-size: 12px;
-            border-radius: 4px;
-            width: 100%;
-            transition: border 0.1s;
-        }
-        input:focus { border-color: var(--accent); z-index: 2; }
-
-        button {
-            background: var(--bg-panel);
-            border: 1px solid var(--border);
-            color: var(--text-primary);
-            padding: 6px 12px;
-            font-size: 12px;
-            font-weight: 500;
-            border-radius: 4px;
-            cursor: pointer;
-            white-space: nowrap;
-            transition: background 0.1s;
-        }
-        button:hover { background: #21262d; border-color: var(--border-active); }
-        button:active { background: #292e36; }
-        button:disabled { opacity: 0.6; cursor: not-allowed; }
-        
-        .btn-primary { background: var(--accent); border-color: rgba(255,255,255,0.1); color: white; }
-        .btn-primary:hover { background: #1a5cce; }
-        .btn-danger { color: var(--danger); border-color: var(--border); }
-        .btn-danger:hover { color: #ff6a67; border-color: var(--danger); background: rgba(218, 54, 51, 0.1); }
-        .btn-block { width: 100%; text-align: center; }
-
-        /* Terminal */
-        .terminal {
-            background: #0d1117;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            flex: 1;
             padding: 12px;
-            font-family: var(--font-mono);
-            font-size: 11px;
-            overflow-y: auto;
-            color: var(--text-secondary);
-            min-height: 150px;
+            background: #0c0c0c;
+            color: #e0e0e0;
+            font-family: Consolas, "Fira Code", "Courier New", monospace;
+            font-size: 12px;
+            line-height: 1.4;
         }
-        .log-line { margin-bottom: 4px; display: flex; }
-        .ts { color: var(--text-tertiary); margin-right: 10px; user-select: none; flex-shrink: 0; }
-        .msg-info { color: var(--text-primary); }
-        .msg-success { color: var(--success); }
-        .msg-error { color: var(--danger); }
-        .msg-sys { color: var(--accent); }
-
-        /* Visualization Elements */
-        .bench-row { display: flex; align-items: center; margin-bottom: 8px; font-size: 11px; }
-        .bench-label { width: 60px; color: var(--text-secondary); }
-        .bench-track { flex: 1; height: 4px; background: #21262d; margin: 0 10px; border-radius: 2px; overflow: hidden; }
-        .bench-fill { height: 100%; background: var(--text-secondary); width: 0%; transition: width 0.5s ease; }
-        .bench-fill.neuro { background: var(--success); }
-        .bench-val { width: 70px; text-align: right; font-family: var(--font-mono); }
-
-        #heatCanvas { width: 100%; height: 200px; background: #010409; border: 1px solid var(--border); border-radius: 4px; margin-top: 10px; }
-
-        /* Scan Results Table */
-        .scan-results { max-height: 180px; overflow-y: auto; margin-top: 8px; font-size: 11px; }
-        .scan-results table { width: 100%; border-collapse: collapse; }
-        .scan-results th, .scan-results td { padding: 4px 8px; text-align: left; border-bottom: 1px solid var(--border); }
-        .scan-results th { color: var(--text-secondary); font-weight: 600; }
-        .scan-results .empty { color: var(--text-tertiary); padding: 12px; text-align: center; }
-        .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 6px; vertical-align: middle; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        
-        /* Scrollbar polish */
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+        .bar {
+            border-bottom: 1px solid #333;
+            padding: 8px 0;
+            margin-bottom: 12px;
+            color: #888;
+        }
+        .bar span { margin-right: 16px; }
+        .bar .v { color: #fff; }
+        .sql-row { display: flex; gap: 8px; margin-bottom: 8px; }
+        .sql-row textarea {
+            flex: 1;
+            min-height: 80px;
+            background: #111;
+            border: 1px solid #333;
+            color: #e0e0e0;
+            font-family: Consolas, "Fira Code", "Courier New", monospace;
+            font-size: 12px;
+            padding: 8px;
+            resize: vertical;
+        }
+        .sql-row button {
+            background: #222;
+            border: 1px solid #444;
+            color: #e0e0e0;
+            padding: 8px 16px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+        .sql-row button:hover { background: #333; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid #333;
+            margin-top: 8px;
+        }
+        th, td {
+            border: 1px solid #333;
+            padding: 6px 10px;
+            text-align: left;
+        }
+        th { background: #1a1a1a; color: #888; }
+        .empty { color: #555; padding: 12px; }
+        .heat-section { margin-top: 20px; }
+        .heat-section h3 { font-size: 12px; font-weight: 600; color: #888; margin: 0 0 8px 0; }
+        .heat-btns { margin-bottom: 8px; }
+        .heat-btns button {
+            background: #222;
+            border: 1px solid #444;
+            color: #aaa;
+            padding: 4px 10px;
+            font-family: inherit;
+            font-size: 11px;
+            cursor: pointer;
+            margin-right: 6px;
+        }
+        .heat-btns button:hover { background: #333; }
+        #heatCanvas { display: block; background: #111; border: 1px solid #333; }
+        .log {
+            margin-top: 16px;
+            padding: 8px;
+            background: #0a0a0a;
+            border: 1px solid #333;
+            max-height: 120px;
+            overflow-y: auto;
+            font-size: 11px;
+            color: #666;
+        }
+        .log .err { color: #c66; }
+        .log .ok { color: #6a6; }
+        .foot { margin-top: 12px; color: #444; font-size: 11px; }
+        .foot a { color: #666; }
     </style>
 </head>
 <body>
 
-    <header>
-        <h1>NeuroDB <span class="badge badge-live">Learned Index</span></h1>
-        <div class="status-indicator">
-            <div class="dot"></div>
-            <span>LSM-Tree (L0/L1) · RMI · CBO</span>
-        </div>
-    </header>
-
-    <div class="metrics">
-        <div class="metric-card">
-            <div class="metric-label">WAL Buffer</div>
-            <div class="metric-value val-queue" id="queueVal">0</div>
-            <div class="metric-sub">Pending Writes</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">MemTable</div>
-            <div class="metric-value" id="memVal">0</div>
-            <div class="metric-sub" id="memSub">RAM Records</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Disk SSTables</div>
-            <div class="metric-value val-sst" id="sstVal">0</div>
-            <div class="metric-sub">L0/L1 Files</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Learned Index</div>
-            <div class="metric-value" id="modelVal">0</div>
-            <div class="metric-sub">Indexes (1 per shard)</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Active Shards</div>
-            <div class="metric-value" id="shardVal" style="color: var(--accent);">--</div>
-            <div class="metric-sub">Parallel Units</div>
-        </div>
-        <div class="metric-card">
-            <div class="metric-label">Ingest Progress</div>
-            <div class="metric-value" id="ingestVal">--</div>
-            <div class="metric-sub">Auto-Insert</div>
-        </div>
+    <div class="bar" id="topBar">
+        Global SeqNum: <span class="v" id="seqNum">--</span> |
+        Active Txs: <span class="v" id="activeTxs">--</span> |
+        GC Watermark: <span class="v" id="gcWm">--</span> |
+        MemTable: <span class="v" id="memVal">0</span> |
+        L0/L1: <span class="v" id="sstVal">0/0</span> |
+        Indexes: <span class="v" id="modelVal">0</span> |
+        Shards: <span class="v" id="shardVal">--</span>
     </div>
 
-    <div class="layout">
-        <div class="col-left">
-            
-            <div class="panel">
-                <div class="panel-title">Data Operations</div>
-                <div class="form-row group-input">
-                    <input type="number" id="putKey" placeholder="ID">
-                    <input type="text" id="putVal" placeholder="Payload">
-                    <button onclick="doPut()">Put</button>
-                </div>
-                <div class="form-row group-input" style="margin-top: 8px;">
-                    <input type="number" id="delKey" placeholder="Delete ID">
-                    <button class="btn-danger" onclick="doDel()">Delete</button>
-                </div>
-                <div style="height: 8px;"></div>
-                <button class="btn-block" onclick="triggerIngest()" id="btnIngest">Batch Ingest (100k)</button>
-            </div>
+    <div class="sql-row">
+        <textarea id="sqlInput" placeholder="SELECT * FROM users&#10;-- or: BEGIN;&#10;--   INSERT/UPDATE/DELETE (via API);&#10;-- COMMIT;"></textarea>
+        <button onclick="runSQL()">Execute</button>
+    </div>
 
-            <div class="panel">
-                <div class="panel-title">Spatial (Z-Order)</div>
-                <div class="form-row group-input">
-                    <input type="number" id="mx" placeholder="X" value="100">
-                    <input type="number" id="my" placeholder="Y" value="200">
-                    <input type="number" id="mz" placeholder="Z" value="50">
-                    <button class="btn-primary" onclick="doMoCap()">Encode</button>
-                </div>
-                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Z-Order encode multi-dimensional coordinates to 1D key</div>
-            </div>
+    <div id="resultArea">
+        <table id="resultTable"><thead><tr><th>id</th><th>data</th></tr></thead><tbody><tr><td colspan="2" class="empty">Run a query to see results.</td></tr></tbody></table>
+    </div>
 
-            <div class="panel">
-                <div class="panel-title">Read Operations</div>
-                <div class="form-row group-input" style="margin-bottom: 12px;">
-                    <input type="number" id="getKey" placeholder="Point Lookup ID...">
-                    <button onclick="doGet()">Get</button>
-                </div>
-                
-                <div class="panel-title" style="margin-top: 15px; font-size: 11px; color: var(--text-secondary);">RANGE SCAN</div>
-                <div class="form-row group-input">
-                    <input type="number" id="scanStart" placeholder="Start Key">
-                    <input type="number" id="scanEnd" placeholder="End Key">
-                    <button onclick="doScan()" id="btnScan">Scan</button>
-                </div>
-            </div>
-
-            <div class="panel">
-                <div class="panel-title">SQL Query</div>
-                <div class="form-row group-input">
-                    <input type="text" id="sqlQuery" placeholder="SELECT * FROM users" style="flex:1;">
-                    <button onclick="doSQL()" id="btnSQL">Execute</button>
-                </div>
-                <div style="font-size: 10px; color: var(--text-tertiary); margin-top: 4px;">Supported: SELECT * FROM &lt;table&gt; [WHERE id &lt;op&gt; &lt;int&gt;] [LIMIT n]</div>
-            </div>
-
-            <div class="panel">
-                <div class="panel-title">Kernel Admin</div>
-                <div class="form-row">
-                    <button class="btn-block" onclick="downloadCSV()">Export Model CSV</button>
-                </div>
-                <div class="form-row">
-                    <button class="btn-block btn-primary" onclick="backupSnapshot()">Backup Snapshot (tar.gz)</button>
-                </div>
-                <div class="form-row">
-                    <button class="btn-block" onclick="backupJSON()">Backup JSON</button>
-                </div>
-                <div class="form-row">
-                    <input type="file" id="restoreFile" accept="application/json" style="display:none">
-                    <button class="btn-block" onclick="triggerRestore()">Restore JSON</button>
-                </div>
-                <button class="btn-block btn-danger" onclick="resetDB()">Reset & Clear Disk</button>
-            </div>
+    <div class="heat-section">
+        <h3>Learned Index Error Heatmap</h3>
+        <div class="heat-btns">
+            <button onclick="loadHeatmap()">Refresh</button>
+            <button onclick="trainRMI()" id="btnTrainRMI">Train RMI (Python)</button>
         </div>
+        <canvas id="heatCanvas" width="800" height="200"></canvas>
+        <div style="color:#555; font-size:10px; margin-top:4px;">X: Key Space | Y: Prediction Error (0 = center)</div>
+    </div>
 
-        <div class="col-right">
-            
-            <div class="panel">
-                <div class="panel-title">
-                    Latency Benchmark
-                    <span id="speedupVal" style="color: var(--success); font-family: var(--font-mono);">0.00x Speedup</span>
-                </div>
-                <div class="bench-row">
-                    <div class="bench-label">B-Tree</div>
-                    <div class="bench-track"><div class="bench-fill" id="barB"></div></div>
-                    <div class="bench-val" id="valB">--</div>
-                </div>
-                <div class="bench-row">
-                    <div class="bench-label" style="color: var(--success);">NeuroDB</div>
-                    <div class="bench-track"><div class="bench-fill neuro" id="barAI"></div></div>
-                    <div class="bench-val" id="valAI">--</div>
-                </div>
-                <button class="btn-primary btn-block" onclick="runBenchmark()" id="btnBench" style="margin-top:10px;">Execute Performance Test</button>
-            </div>
-
-            <div class="panel">
-                <div class="panel-title">Scan Results</div>
-                <div class="scan-results" id="scanResults">
-                    <div class="empty">Run a range scan or SQL query to see results</div>
-                </div>
-            </div>
-
-            <div class="panel">
-                <div class="panel-title">Learned Index Error Heatmap</div>
-                <div style="display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap;">
-                    <button onclick="loadHeatmap()" class="btn-primary" style="font-size: 11px; padding: 6px 12px;">Refresh</button>
-                    <button onclick="trainRMI()" id="btnTrainRMI" class="btn-primary" style="font-size: 11px; padding: 6px 12px; background: var(--accent);">Train RMI (Python)</button>
-                </div>
-                <canvas id="heatCanvas" width="800" height="200"></canvas>
-                <div style="font-size:10px; color:var(--text-tertiary); margin-top:4px; text-align: center;">
-                    X-Axis: Key Space | Y-Axis: Prediction Error (Center = 0)
-                </div>
-            </div>
-
-            <div class="terminal" id="console">
-                <div class="log-line"><span class="ts">SYSTEM</span><span class="msg-sys">NeuroDB Ready. LSM-Tree + Learned Index + CBO.</span></div>
-            </div>
-        </div>
+    <div class="log" id="console"></div>
+    <div class="foot">
+        <a href="#" onclick="backupSnapshot(); return false;">Backup (tar.gz)</a> |
+        <a href="/api/export" download="neurodb_model.csv">Export CSV</a> |
+        <a href="#" onclick="resetDB(); return false;">Reset DB</a>
     </div>
 
     <script>
-        // --- Core Utilities ---
-        function log(msg, type = 'info') {
+        let sessionId = '';
+
+        function log(msg, type) {
             const el = document.getElementById('console');
-            const now = new Date().toISOString().split('T')[1].slice(0,8);
-            let cls = 'msg-info';
-            if (type === 'err') cls = 'msg-error';
-            if (type === 'ok') cls = 'msg-success';
-            if (type === 'sys') cls = 'msg-sys';
-            
-            const row = document.createElement('div');
-            row.className = 'log-line';
-            row.innerHTML = `<span class="ts">${now}</span><span class="${cls}">${msg}</span>`;
-            el.appendChild(row);
+            const line = document.createElement('div');
+            line.className = type === 'err' ? 'err' : type === 'ok' ? 'ok' : '';
+            line.textContent = new Date().toISOString().slice(11, 19) + ' ' + msg;
+            el.appendChild(line);
             el.scrollTop = el.scrollHeight;
         }
 
-        // --- Metrics Polling ---
         async function updateStats() {
             try {
-                // Main Stats
                 const res = await fetch('/api/stats');
-                if (res.ok) {
-                    const data = await res.json();
-                    document.getElementById('memVal').innerText = data.memtable_record_count.toLocaleString();
-                    const l0 = data.l0_sstable_count || 0;
-                    const l1 = data.l1_sstable_count || 0;
-                    document.getElementById('sstVal').innerText = `${l0}/${l1}`;
-                    document.getElementById('modelVal').innerText = data.learned_indexes_count;
-                    document.getElementById('shardVal').innerText = data.shards_active || "--";
-                    document.getElementById('memSub').innerText = `RAM Records | WAL ${(data.wal_size_bytes || 0).toLocaleString()} B`;
-                    
-                    const queueSize = data.pending_writes || 0;
-                    const qEl = document.getElementById('queueVal');
-                    qEl.innerText = queueSize.toLocaleString();
-                    if (queueSize > 2000) qEl.style.color = '#da3633';
-                    else if (queueSize > 500) qEl.style.color = '#d29922';
-                    else qEl.style.color = '#1f6feb';
-                }
-
-                // Ingest Status
-                const resIngest = await fetch('/api/ingest/status');
-                if (resIngest.ok) {
-                    const d = await resIngest.json();
-                    document.getElementById('ingestVal').innerText = d.ingested.toLocaleString();
-                }
-
-            } catch(e) {}
+                if (!res.ok) return;
+                const d = await res.json();
+                document.getElementById('memVal').textContent = (d.memtable_record_count || 0).toLocaleString();
+                document.getElementById('sstVal').textContent = (d.l0_sstable_count || 0) + '/' + (d.l1_sstable_count || 0);
+                document.getElementById('modelVal').textContent = d.learned_indexes_count || 0;
+                document.getElementById('shardVal').textContent = d.shards_active ?? '--';
+                document.getElementById('seqNum').textContent = d.global_seq_num != null ? d.global_seq_num : '--';
+                document.getElementById('activeTxs').textContent = d.active_txs != null ? d.active_txs : '--';
+                document.getElementById('gcWm').textContent = d.gc_watermark != null ? d.gc_watermark : '--';
+            } catch (e) {}
         }
-        setInterval(updateStats, 1000);
+        setInterval(updateStats, 1500);
+        updateStats();
 
-        // --- Write Operations ---
-        async function doPut() {
-            const k = parseInt(document.getElementById('putKey').value);
-            const v = document.getElementById('putVal').value || "val";
-            if(isNaN(k)) return;
+        async function runSQL() {
+            const q = document.getElementById('sqlInput').value.trim();
+            if (!q) return;
+            log('SQL: ' + q.split('\n')[0], '');
+            const body = { query: q };
+            if (sessionId) body.session_id = sessionId;
             try {
-                await fetch('/api/put', { method:'POST', body: JSON.stringify({key:k, value:v})});
-                log(`Write: Key=${k}`, 'ok');
-                document.getElementById('putKey').value = k+1;
-            } catch(e) { log("Put failed: " + e, 'err'); }
-        }
-
-        // [New] Delete Operation
-        async function doDel() {
-            const k = document.getElementById('delKey').value;
-            if(!k) return;
-            try {
-                const res = await fetch(`/api/del?key=${k}`, { method:'DELETE' });
-                if (res.ok) {
-                    log(`Delete: Key=${k}`, 'sys');
-                    document.getElementById('delKey').value = '';
+                const res = await fetch('/api/sql', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const d = await res.json();
+                if (d.error) {
+                    log('Error: ' + d.error, 'err');
+                    return;
+                }
+                if (d.session_id) sessionId = d.session_id;
+                if (d.ok && !d.rows) {
+                    log('OK', 'ok');
+                    return;
+                }
+                const rows = d.rows || [];
+                const tbody = document.querySelector('#resultTable tbody');
+                tbody.innerHTML = '';
+                if (rows.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="2" class="empty">0 rows</td></tr>';
                 } else {
-                    const txt = await res.text();
-                    log(`Delete failed: ${txt}`, 'err');
-                }
-            } catch(e) { log("Delete error: " + e, 'err'); }
-        }
-
-        async function triggerIngest() {
-            if(!confirm("Initiate batch ingestion (100k records)?")) return;
-            const btn = document.getElementById('btnIngest');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span>Starting...';
-            log("Starting high-throughput ingestion...", 'sys');
-            try {
-                await fetch('/api/ingest', { method:'POST'});
-                log("Ingestion started. Watch 'Ingest Progress'.", 'sys');
-                const check = setInterval(() => {
-                    fetch('/api/ingest/status').then(r=>r.json()).then(d=>{
-                        if(d.ingested >= 100000) {
-                            clearInterval(check);
-                            btn.disabled = false;
-                            btn.innerText = 'Batch Ingest (100k)';
-                        } else {
-                            btn.innerHTML = '<span class="spinner"></span>Ingesting... ' + d.ingested.toLocaleString();
-                        }
+                    rows.forEach(r => {
+                        const tr = document.createElement('tr');
+                        tr.innerHTML = '<td>' + (r.id ?? '') + '</td><td>' + escapeHtml(String(r.data ?? r.value ?? '')) + '</td>';
+                        tbody.appendChild(tr);
                     });
-                }, 500);
-            } catch(e) { log(e, 'err'); btn.disabled = false; btn.innerText = 'Batch Ingest (100k)'; }
-        }
-
-        async function doMoCap() {
-            const x = parseInt(document.getElementById('mx').value);
-            const y = parseInt(document.getElementById('my').value);
-            const z = parseInt(document.getElementById('mz').value);
-            try {
-                const res = await fetch('/api/mocap/put', { method:'POST', body: JSON.stringify({x,y,z, data:"Frame"})});
-                const d = await res.json();
-                log(`Spatial Index: (${x},${y},${z}) -> Z-Key: ${d.spatial_key}`, 'sys');
-                document.getElementById('mx').value = x+1;
-            } catch(e) { log(e, 'err'); }
-        }
-
-        // --- Read Operations ---
-        async function doGet() {
-            const k = document.getElementById('getKey').value;
-            if(!k) return;
-            try {
-                const res = await fetch(`/api/get?key=${k}`);
-                if(res.ok) {
-                    const d = await res.json();
-                    log(`Query Hit: Key=${k} (${d.latency_ns}ns) Val=${d.value}`, 'ok');
                 }
-                else log(`Query Miss: Key=${k}`, 'err');
-            } catch(e) { log(`Error querying key ${k}`, 'err'); }
-        }
-
-        async function doScan() {
-            const s = document.getElementById('scanStart').value;
-            const e = document.getElementById('scanEnd').value;
-            if(!s || !e) return;
-            
-            const btn = document.getElementById('btnScan');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span>Scanning';
-            log(`Scanning range [${s}, ${e}]...`, 'sys');
-            try {
-                const res = await fetch(`/api/scan?start=${s}&end=${e}`);
-                const d = await res.json();
-                renderScanResults(d.data || [], d.count, `Range [${s}, ${e}]`);
-                log(`Scan Result: Found ${d.count} records.`, 'ok');
-            } catch(err) { log(err, 'err'); }
-            finally { btn.disabled = false; btn.innerText = 'Scan'; }
-        }
-
-        function renderScanResults(data, count, title) {
-            const el = document.getElementById('scanResults');
-            if(!data || data.length === 0) {
-                el.innerHTML = `<div class="empty">${title}: 0 records</div>`;
-                return;
+                log(d.table + ': ' + rows.length + ' rows', 'ok');
+            } catch (e) {
+                log('Request failed: ' + e, 'err');
             }
-            let html = `<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>`;
-            const maxShow = 50;
-            for(let i = 0; i < Math.min(data.length, maxShow); i++) {
-                const r = data[i];
-                const val = (r.value ?? r.Value ?? '').toString();
-                const displayVal = val.length > 40 ? val.slice(0,37) + '...' : val;
-                const k = r.key ?? r.Key ?? '';
-                html += `<tr><td>${k}</td><td title="${escapeHtml(val)}">${escapeHtml(displayVal)}</td></tr>`;
-            }
-            html += '</tbody></table>';
-            if(data.length > maxShow) html += `<div class="empty">... and ${data.length - maxShow} more</div>`;
-            el.innerHTML = html;
         }
-        function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-
-        async function doSQL() {
-            const q = (document.getElementById('sqlQuery').value || 'SELECT * FROM users').trim();
-            if(!q) return;
-            
-            const btn = document.getElementById('btnSQL');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="spinner"></span>Executing';
-            log(`SQL: ${q}`, 'sys');
-            try {
-                const res = await fetch('/api/sql', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:q})});
-                const d = await res.json();
-                if(d.error) {
-                    log(`SQL Error: ${d.error}`, 'err');
-                } else {
-                    const rows = (d.rows || []).map(r => ({key: r.id, value: r.value ?? r.data}));
-                    renderScanResults(rows, d.count, `FROM ${d.table}`);
-                    log(`SQL Result: ${d.count} rows from ${d.table}`, 'ok');
-                }
-            } catch(err) { log(err, 'err'); }
-            finally { btn.disabled = false; btn.innerText = 'Execute'; }
+        function escapeHtml(s) {
+            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
 
-        // --- Visualization & Benchmarks ---
         async function trainRMI() {
             const btn = document.getElementById('btnTrainRMI');
-            if (btn.disabled) return;
             btn.disabled = true;
-            btn.innerText = 'Training...';
-            log('Triggering Python RMI training (all shards with data)...', 'info');
+            btn.textContent = 'Training...';
             try {
                 const res = await fetch('/api/train-rmi', { method: 'POST' });
                 const d = await res.json();
-                if (d.error) {
-                    log('Train RMI failed: ' + d.error, 'err');
-                    return;
-                }
-                log(d.message || 'RMI training done. Refreshing heatmap.', 'ok');
-                setTimeout(function(){ loadHeatmap(); }, 300);
-            } catch(e) { log('Train RMI: ' + e, 'err'); }
-            finally { btn.disabled = false; btn.innerText = 'Train RMI (Python)'; }
+                if (d.error) log('Train RMI: ' + d.error, 'err');
+                else { log(d.message || 'RMI trained.', 'ok'); loadHeatmap(); }
+            } catch (e) { log('Train RMI: ' + e, 'err'); }
+            btn.disabled = false;
+            btn.textContent = 'Train RMI (Python)';
         }
 
-        async function runBenchmark() {
-            const btn = document.getElementById('btnBench');
-            const originalText = btn.innerText;
-            btn.innerHTML = '<span class="spinner"></span>Running Test...'; btn.disabled = true;
-            try {
-                const res = await fetch('/api/benchmark');
-                const d = await res.json();
-                if (d.error) {
-                    log('Benchmark: ' + d.error, 'err');
-                    return;
-                }
-                document.getElementById('valB').innerText = d.btree_avg_ns;
-                document.getElementById('valAI').innerText = d.ai_avg_ns;
-                document.getElementById('speedupVal').innerText = d.speedup + " Speedup";
-                const valB = parseFloat(String(d.btree_avg_ns).replace(/\s*ns$/, ''));
-                const valAI = parseFloat(String(d.ai_avg_ns).replace(/\s*ns$/, ''));
-                const max = Math.max(valB, valAI) || 1;
-                document.getElementById('barB').style.width = (valB/max*100) + "%";
-                document.getElementById('barAI').style.width = (valAI/max*100) + "%";
-                log(`Benchmark: ${d.speedup} speedup achieved.`, 'sys');
-            } catch(e) { log(e, 'err'); }
-            finally { btn.innerHTML = originalText; btn.disabled = false; }
-        }
-
-        // Dynamic adaptive heatmap
         async function loadHeatmap() {
             const cvs = document.getElementById('heatCanvas');
             const ctx = cvs.getContext('2d');
-            const W = cvs.width;
-            const H = cvs.height;
-
-            ctx.fillStyle = '#010409';
-            ctx.fillRect(0,0,W,H);
-            ctx.strokeStyle = '#30363d';
+            const W = cvs.width, H = cvs.height;
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, 0, W, H);
+            ctx.strokeStyle = '#333';
             ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
-
+            ctx.beginPath();
+            ctx.moveTo(0, H/2);
+            ctx.lineTo(W, H/2);
+            ctx.stroke();
             try {
-                log("Fetching model diagnostics...", 'info');
                 const res = await fetch('/api/heatmap');
                 const data = await res.json();
-                
-                if(!data || data.length === 0) {
-                    log("No model data available (Try inserting >50k records)", 'err');
-                    return;
-                }
-
-                const minK = data[0].k;
-                const maxK = data[data.length-1].k;
-                const rangeK = maxK - minK || 1;
-
-                // 1. Compute max error
+                if (!data || data.length === 0) return;
+                const minK = data[0].k, maxK = data[data.length-1].k, rangeK = maxK - minK || 1;
                 let maxErrAbs = 0;
-                data.forEach(p => {
-                    const absE = Math.abs(p.e);
-                    if (absE > maxErrAbs) maxErrAbs = absE;
-                });
+                data.forEach(p => { const e = Math.abs(p.e); if (e > maxErrAbs) maxErrAbs = e; });
                 if (maxErrAbs === 0) maxErrAbs = 1;
-
-                // 2. Scale factor (10% margin)
-                const scaleFactor = ((H / 2) / maxErrAbs) * 0.9;
-
-                // 3. Draw
+                const scale = ((H/2) / maxErrAbs) * 0.9;
                 data.forEach(p => {
                     const x = ((p.k - minK) / rangeK) * W;
-                    let y = (H/2) - (p.e * scaleFactor);
-
-                    if(y < 0) y = 0;
-                    if(y > H) y = H;
-
-                    const errMag = Math.abs(p.e);
-                    if(errMag < 5) ctx.fillStyle = '#238636';     
-                    else if(errMag < 20) ctx.fillStyle = '#d29922'; 
-                    else ctx.fillStyle = '#da3633';                 
-
+                    let y = (H/2) - (p.e * scale);
+                    if (y < 0) y = 0;
+                    if (y > H) y = H;
+                    ctx.fillStyle = Math.abs(p.e) < 5 ? '#363' : Math.abs(p.e) < 20 ? '#663' : '#633';
                     ctx.fillRect(x, y, 2, 2);
                 });
-                log(`Heatmap updated (${data.length} pts, Scale: 1:${scaleFactor.toFixed(2)})`, 'ok');
-
-            } catch(e) { log("Error loading heatmap: " + e, 'err'); }
+            } catch (e) {}
         }
+        loadHeatmap();
 
-        // --- Admin ---
-        function downloadCSV() { window.location.href = "/api/export"; }
-
-        /** Default: physical snapshot (hardlink .sst/.li, tar.gz), instant, no OOM */
         async function backupSnapshot() {
             try {
                 const res = await fetch('/api/backup');
-                if (!res.ok) throw new Error(`backup failed: ${res.status}`);
+                if (!res.ok) throw new Error(res.status);
                 const blob = await res.blob();
-                const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
-                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                a.href = url;
-                a.download = `neurodb-snapshot-${ts}.tar.gz`;
+                a.href = URL.createObjectURL(blob);
+                a.download = 'neurodb-snapshot.tar.gz';
                 a.click();
-                URL.revokeObjectURL(url);
-                log('Backup snapshot downloaded (tar.gz).', 'ok');
-            } catch (e) { log(`Backup snapshot failed: ${e}`, 'err'); }
+                URL.revokeObjectURL(a.href);
+                log('Backup downloaded.', 'ok');
+            } catch (e) { log('Backup failed: ' + e, 'err'); }
         }
 
-        /** Optional: full-table JSON export (may be slow on large data) */
-        async function backupJSON() {
-            try {
-                const res = await fetch('/api/backup?format=json');
-                if (!res.ok) throw new Error(`backup failed: ${res.status}`);
-                const data = await res.json();
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                a.href = url;
-                a.download = `neurodb-backup-${ts}.json`;
-                a.click();
-                URL.revokeObjectURL(url);
-                log(`Backup JSON exported (${data.record_count || 0} records).`, 'ok');
-            } catch (e) { log(`Backup JSON failed: ${e}`, 'err'); }
-        }
-
-        function triggerRestore() {
-            const input = document.getElementById('restoreFile');
-            input.value = '';
-            input.onchange = async () => {
-                const file = input.files && input.files[0];
-                if (!file) return;
-                if (!confirm("Restore will reset current data. Continue?")) return;
-                try {
-                    const text = await file.text();
-                    const res = await fetch('/api/restore', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: text
-                    });
-                    const data = await res.json();
-                    if (!res.ok || data.error) throw new Error(data.error || `restore failed: ${res.status}`);
-                    log(`Restore completed (${data.restored_count || 0} records).`, 'ok');
-                    updateStats();
-                } catch (e) { log(`Restore error: ${e}`, 'err'); }
-            };
-            input.click();
-        }
-        
         async function resetDB() {
-            if(!confirm("WARNING: This will wipe WAL & SSTables. Continue?")) return;
+            if (!confirm('Reset database? This wipes WAL and SSTables.')) return;
             try {
                 await fetch('/api/reset');
-                log("Kernel, WAL & SSTables reset successfully.", 'sys');
-                document.getElementById('valB').innerText = "--";
-                document.getElementById('valAI').innerText = "--";
-                const cvs = document.getElementById('heatCanvas');
-                cvs.getContext('2d').clearRect(0,0,cvs.width,cvs.height);
+                sessionId = '';
+                log('DB reset.', 'ok');
                 updateStats();
-            } catch(e) { log(e, 'err'); }
+                loadHeatmap();
+            } catch (e) { log('Reset failed: ' + e, 'err'); }
         }
+
+        log('NeuroDB ready. LSM-Tree + RMI + MVCC.', '');
     </script>
 </body>
 </html>

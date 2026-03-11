@@ -1001,7 +1001,7 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 	if err != nil {
 		walSize = 0
 	}
-	return map[string]interface{}{
+	m := map[string]interface{}{
 		"memtable_record_count": totalMem,
 		"learned_indexes_count": totalIndex,
 		"l0_sstable_count":      totalL0,
@@ -1016,6 +1016,12 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 		"rw_ratio":              hs.stats.GetReadWriteRatio(),
 		"mode":                  "Hybrid (LSM-Tree + AI)",
 	}
+	if hs.txManager != nil {
+		m["global_seq_num"] = hs.CurrentSeqNum()
+		m["active_txs"] = hs.txManager.ActiveTxCount()
+		m["gc_watermark"] = hs.oldestActiveReadView.Load()
+	}
+	return m
 }
 
 func (hs *HybridStore) ExportModelData() ([]corelearned.DiagnosticPoint, error) {
