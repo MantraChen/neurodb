@@ -195,6 +195,60 @@ func (hs *HybridStore) Delete(key common.KeyType) {
 	hs.Put(key, []byte{})
 }
 
+// Commit commits a WriteBatch atomically: one SeqNum, WAL with TypeCommit, then apply to MemTable. Used for transactions (e.g. SQL BEGIN/INSERT.../COMMIT).
+func (hs *HybridStore) Commit(wb *WriteBatch) error {
+	if wb.Len() == 0 {
+		return nil
+	}
+	seq := hs.nextSeqNum()
+	records := make([]common.Record, 0, len(wb.ops))
+	for _, op := range wb.ops {
+		r := common.Record{Key: op.key, SeqNum: seq}
+		if op.op == OpPut {
+			r.Value = op.value
+			r.RecordType = common.RecordTypePut
+		} else {
+			r.RecordType = common.RecordTypeDelete
+		}
+		records = append(records, r)
+	}
+	if err := hs.backend.CommitBatch(records, seq); err != nil {
+		return err
+	}
+	// Apply to MemTable (group by shard to avoid deadlock with adaptiveFlush)
+	type opT struct {
+		op    Op
+		key   common.KeyType
+		value common.ValueType
+	}
+	perShard := make(map[*Shard][]opT)
+	for _, op := range wb.ops {
+		shard := hs.getShard(op.key)
+		perShard[shard] = append(perShard[shard], opT{op.op, op.key, op.value})
+	}
+	for shard, ops := range perShard {
+		shard.mutex.Lock()
+		for _, op := range ops {
+			shard.bloom.Add(op.key)
+			val := op.value
+			if op.op == OpDelete {
+				val = []byte{}
+			}
+			shard.mutableMem.Put(op.key, val, seq)
+		}
+		shard.mutex.Unlock()
+	}
+	for shard := range perShard {
+		shard.mutex.RLock()
+		over := shard.mutableMem.Count() >= hs.conf.Storage.MemTableFlushThreshold
+		shard.mutex.RUnlock()
+		if over {
+			hs.adaptiveFlush(shard)
+		}
+	}
+	return nil
+}
+
 // Get returns the value for key visible to the current read view (snapshot isolation).
 // Read view = current global SeqNum; MemTable entries with SeqNum > readView are filtered out.
 // SST/Learned index currently store a single version per key (committed state), so they are always visible.

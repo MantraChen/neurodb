@@ -230,3 +230,49 @@ func TestRecoveryPreservesLatestAndTombstoneAcrossRestarts(t *testing.T) {
 		t.Fatalf("expected restored leveled files (l0=0,l1>0), got l0=%d l1=%d", l0Count, l1Count)
 	}
 }
+
+func TestCommitWriteBatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Storage: config.StorageConfig{
+			Path:                   tmpDir,
+			WalBufferSize:          8,
+			MemTableFlushThreshold: 10000,
+			CompactionThreshold:    4,
+			WalBatchSize:           4,
+		},
+		System: config.SystemConfig{
+			ShardCount:     2,
+			BloomSize:      1024,
+			BloomFalseProb: 0.01,
+		},
+	}
+	hs := NewHybridStore(cfg)
+	t.Cleanup(hs.Close)
+
+	wb := NewWriteBatch()
+	wb.Put(10, []byte("ten"))
+	wb.Put(20, []byte("twenty"))
+	if err := hs.Commit(wb); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if v, ok := hs.Get(10); !ok || !bytes.Equal(v, []byte("ten")) {
+		t.Fatalf("Get(10): ok=%v v=%q", ok, string(v))
+	}
+	if v, ok := hs.Get(20); !ok || !bytes.Equal(v, []byte("twenty")) {
+		t.Fatalf("Get(20): ok=%v v=%q", ok, string(v))
+	}
+
+	wb2 := NewWriteBatch()
+	wb2.Delete(10)
+	wb2.Put(20, []byte("twenty-updated"))
+	if err := hs.Commit(wb2); err != nil {
+		t.Fatalf("Commit wb2: %v", err)
+	}
+	if _, ok := hs.Get(10); ok {
+		t.Fatalf("Get(10) after delete should be missing")
+	}
+	if v, ok := hs.Get(20); !ok || !bytes.Equal(v, []byte("twenty-updated")) {
+		t.Fatalf("Get(20): ok=%v v=%q", ok, string(v))
+	}
+}

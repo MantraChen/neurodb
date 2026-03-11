@@ -14,11 +14,11 @@ import (
 )
 
 // Record format v0 (legacy): [CRC32 4B] [Timestamp 8B] [Key 8B] [ValSize 4B] [Value NB]
-// Record format v1 (MVCC):  file starts with 0x01; then per record [SeqNum 8B] [CRC32 4B] [Timestamp 8B] [Key 8B] [ValSize 4B] [Value NB]
+// Record format v1 (MVCC + Tx): file starts with 0x01; then per record [SeqNum 8B] [Type 1B] [CRC32 4B] [Timestamp 8B] [Key 8B] [ValSize 4B] [Value NB]
 
 const (
-	HeaderSize   = 4 + 8 + 8 + 4       // 24 Bytes (v0)
-	HeaderSizeV1 = 8 + 4 + 8 + 8 + 4  // 32 Bytes (SeqNum + rest)
+	HeaderSize   = 4 + 8 + 8 + 4        // 24 Bytes (v0)
+	HeaderSizeV1 = 8 + 1 + 4 + 8 + 8 + 4 // 33 Bytes (SeqNum + Type + CRC + Ts + Key + ValSize)
 	WALVersion1  = 0x01
 )
 
@@ -61,14 +61,19 @@ func (w *WAL) AppendRecord(rec common.Record) error {
 		header := make([]byte, HeaderSizeV1)
 		ts := uint64(time.Now().UnixNano())
 		valSize := uint32(len(rec.Value))
+		rt := rec.RecordType
+		if rt == 0 {
+			rt = common.RecordTypePut
+		}
 		binary.LittleEndian.PutUint64(header[0:8], rec.SeqNum)
-		binary.LittleEndian.PutUint64(header[12:20], ts)
-		binary.LittleEndian.PutUint64(header[20:28], uint64(rec.Key))
-		binary.LittleEndian.PutUint32(header[28:32], valSize)
+		header[8] = rt
+		binary.LittleEndian.PutUint64(header[13:21], ts)
+		binary.LittleEndian.PutUint64(header[21:29], uint64(rec.Key))
+		binary.LittleEndian.PutUint32(header[29:33], valSize)
 		checksum := crc32.NewIEEE()
-		checksum.Write(header[12:32])
+		checksum.Write(header[13:33])
 		checksum.Write(rec.Value)
-		binary.LittleEndian.PutUint32(header[8:12], checksum.Sum32())
+		binary.LittleEndian.PutUint32(header[9:13], checksum.Sum32())
 		if _, err := w.buf.Write(header); err != nil {
 			return err
 		}
@@ -129,6 +134,23 @@ func (w *WAL) Truncate() error {
 	return w.file.Sync()
 }
 
+// TruncateTo truncates the WAL file to the given offset (e.g. after last committed record). Call after replay when discarding a pending transaction.
+func (w *WAL) TruncateTo(offset int64) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.buf.Flush(); err != nil {
+		return err
+	}
+	if err := w.file.Truncate(offset); err != nil {
+		return err
+	}
+	if _, err := w.file.Seek(offset, io.SeekStart); err != nil {
+		return err
+	}
+	w.buf = bufio.NewWriter(w.file)
+	return nil
+}
+
 func (w *WAL) Size() (int64, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -143,10 +165,10 @@ func (w *WAL) Size() (int64, error) {
 }
 
 type WALIterator struct {
-	reader *bufio.Reader
-	file   *os.File
-	v1     bool   // true = records have SeqNum (32-byte header)
-	offset int64  // current read offset (for v1, 1 after version byte)
+	reader   *bufio.Reader
+	file     *os.File
+	v1       bool  // true = records have SeqNum + Type (33-byte header)
+	bytesRead int64 // bytes read from record stream (after version byte if v1); used for OffsetAfterRecord()
 }
 
 func (w *WAL) NewIterator() (*WALIterator, error) {
@@ -167,10 +189,19 @@ func (w *WAL) NewIterator() (*WALIterator, error) {
 	}
 	// else n == 0: empty file, reader is f (Next will get EOF)
 	return &WALIterator{
-		file:   f,
-		reader: bufio.NewReader(reader),
-		v1:     v1,
+		file:      f,
+		reader:    bufio.NewReader(reader),
+		v1:        v1,
+		bytesRead: 0,
 	}, nil
+}
+
+// OffsetAfterRecord returns the file offset immediately after the last record returned by Next(). Used to truncate WAL after discarding a pending transaction.
+func (it *WALIterator) OffsetAfterRecord() int64 {
+	if it.v1 {
+		return 1 + it.bytesRead
+	}
+	return it.bytesRead
 }
 
 func (it *WALIterator) Next() (common.Record, error) {
@@ -192,20 +223,22 @@ func (it *WALIterator) Next() (common.Record, error) {
 
 	if it.v1 {
 		seqNum := binary.LittleEndian.Uint64(header[0:8])
-		storedCRC = binary.LittleEndian.Uint32(header[8:12])
-		valSize = binary.LittleEndian.Uint32(header[28:32])
-		key = common.KeyType(binary.LittleEndian.Uint64(header[20:28]))
+		recType := header[8]
+		storedCRC = binary.LittleEndian.Uint32(header[9:13])
+		valSize = binary.LittleEndian.Uint32(header[29:33])
+		key = common.KeyType(binary.LittleEndian.Uint64(header[21:29]))
 		value := make([]byte, valSize)
 		if _, err := io.ReadFull(it.reader, value); err != nil {
 			return common.Record{}, errors.New("wal: corrupted value")
 		}
+		it.bytesRead += int64(HeaderSizeV1) + int64(valSize)
 		checksum := crc32.NewIEEE()
-		checksum.Write(header[12:32])
+		checksum.Write(header[13:33])
 		checksum.Write(value)
 		if checksum.Sum32() != storedCRC {
 			return common.Record{}, errors.New("wal: crc mismatch")
 		}
-		return common.Record{Key: key, Value: value, SeqNum: seqNum}, nil
+		return common.Record{Key: key, Value: value, SeqNum: seqNum, RecordType: recType}, nil
 	}
 
 	storedCRC = binary.LittleEndian.Uint32(header[0:4])

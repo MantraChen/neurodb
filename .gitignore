@@ -1,4 +1,3 @@
-# 数据库文件
 *.db
 *.db-shm
 *.db-wal
@@ -9,9 +8,5 @@
 *.li.new
 *.new
 server
-
-# Index 训练模型文件
+main
 *.index
-
-# 或者如果只想排除特定的数据库文件，可以使用：
-# neuro.db*
