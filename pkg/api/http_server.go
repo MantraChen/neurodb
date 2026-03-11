@@ -172,6 +172,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "# HELP neurodb_l1_sstable_files Current L1 SSTable files.")
 	fmt.Fprintln(w, "# TYPE neurodb_l1_sstable_files gauge")
 	fmt.Fprintf(w, "neurodb_l1_sstable_files %.0f\n", numberToFloat64(stats["l1_sstable_count"]))
+	fmt.Fprintln(w, "# HELP neurodb_l2_sstable_files Current L2 SSTable files.")
+	fmt.Fprintln(w, "# TYPE neurodb_l2_sstable_files gauge")
+	fmt.Fprintf(w, "neurodb_l2_sstable_files %.0f\n", numberToFloat64(stats["l2_sstable_count"]))
+	fmt.Fprintln(w, "# HELP neurodb_l3_sstable_files Current L3 SSTable files.")
+	fmt.Fprintln(w, "# TYPE neurodb_l3_sstable_files gauge")
+	fmt.Fprintf(w, "neurodb_l3_sstable_files %.0f\n", numberToFloat64(stats["l3_sstable_count"]))
 
 	fmt.Fprintln(w, "# HELP neurodb_pending_writes Current pending WAL writes.")
 	fmt.Fprintln(w, "# TYPE neurodb_pending_writes gauge")

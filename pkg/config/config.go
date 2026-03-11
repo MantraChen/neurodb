@@ -20,9 +20,11 @@ type ServerConfig struct {
 type StorageConfig struct {
 	Path                   string `yaml:"path"`
 	WalBufferSize          int    `yaml:"wal_buffer_size"`
-	MemTableFlushThreshold int `yaml:"memtable_flush_threshold"`
-	CompactionThreshold    int `yaml:"compaction_threshold"`
-	WalBatchSize           int `yaml:"wal_batch_size"`
+	MemTableFlushThreshold int    `yaml:"memtable_flush_threshold"`
+	CompactionThreshold    int    `yaml:"compaction_threshold"`
+	WalBatchSize           int    `yaml:"wal_batch_size"`
+	L1MaxFiles             int    `yaml:"l1_max_files"` // trigger L1->L2 when L1 count >= this (default 10)
+	L2MaxFiles             int    `yaml:"l2_max_files"` // trigger L2->L3 when L2 count >= this (default 10)
 }
 
 type SystemConfig struct {
@@ -43,6 +45,8 @@ func Load(configPath string) (*Config, error) {
 			MemTableFlushThreshold: 2000,
 			CompactionThreshold:    4,
 			WalBatchSize:           500,
+			L1MaxFiles:             10,
+			L2MaxFiles:             10,
 		},
 		System: SystemConfig{
 			ShardCount:     16,
@@ -88,6 +92,12 @@ func applyStorageDefaults(cfg *Config) {
 	}
 	if cfg.Storage.WalBatchSize <= 0 {
 		cfg.Storage.WalBatchSize = 500
+	}
+	if cfg.Storage.L1MaxFiles <= 0 {
+		cfg.Storage.L1MaxFiles = 10
+	}
+	if cfg.Storage.L2MaxFiles <= 0 {
+		cfg.Storage.L2MaxFiles = 10
 	}
 	if cfg.System.ShardCount <= 0 {
 		cfg.System.ShardCount = 16

@@ -22,8 +22,9 @@ By offloading index training to a Python Sidecar and leveraging a Go-based kerne
 - **Durable Write-Ahead Log (WAL)**: Includes v1 format persisting `SeqNum`, `TypePut/Delete/Commit` boundaries, and robust Undo/Truncate recovery for pending transactions during crashes.
 
 ### 3. Industrial-Grade Storage (LSM-Tree)
-- **Leveled Compaction**: Sharded MemTables flush to `L0`, with background compaction to `L1`.
+- **Deep Leveled Compaction**: Sharded MemTables flush to `L0`, then `L0→L1`, `L1→L2`, `L2→L3` with configurable level limits (`l1_max_files`, `l2_max_files`). Cascading async RMI training after each level merge.
 - **Tombstone GC**: Governed by the `SetOldestActiveReadView` watermark to safely garbage collect physical data only when it's no longer needed by active transactions.
+- **Group Commit**: Batched WAL writes with a single `Sync()` per 5ms window for high-concurrency throughput.
 - **Multi-Dimensional Spatial Indexing**: Built-in Z-Order encoder allowing joint spatial indexes to be seamlessly processed by the 1D Learned Index.
 
 ## Quick Start
@@ -60,12 +61,14 @@ NeuroDB supports multiple connection protocols:
 ### Dashboard
 Open **http://localhost:8080** for a minimal terminal-style UI: **Global SeqNum**, **Active Txs**, **GC Watermark**, SQL textarea (supports `BEGIN; ... COMMIT;`), and the **Learned Index Error Heatmap**.
 
-## Roadmap
+## Roadmap (Complete)
 - [x] **Milestone 1**: LSM-Tree Kernel, WAL Checkpointing, and Go+Python Sidecar architecture.
 - [x] **Milestone 2**: Strict Error Bounds inference and Z-Order multi-dimensional mappings.
 - [x] **Milestone 3**: MVCC, TxManager, and complete ACID Transaction APIs.
-- [ ] **Milestone 4** (In Progress): Deep leveled compaction (L1->L2->L3...) and cascading asynchronous RMI hot-reloading.
-- [ ] **Milestone 5**: Group Commit optimizations for high-concurrency WAL syncing.
+- [x] **Milestone 4**: Deep leveled compaction (L1→L2→L3) and cascading asynchronous RMI hot-reloading.
+- [x] **Milestone 5**: Group Commit optimizations for high-concurrency WAL syncing.
+
+**NeuroDB** is feature-complete for the above roadmap. The codebase is suitable for research, benchmarking, and integration (TCP, HTTP, MySQL wire, SQL with transactions).
 
 ## License & Citation
 Released under the **MIT License**. Copyright (c) 2026 HowieSun.

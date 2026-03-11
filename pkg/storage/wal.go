@@ -80,7 +80,7 @@ func (w *WAL) AppendRecord(rec common.Record) error {
 		if _, err := w.buf.Write(rec.Value); err != nil {
 			return err
 		}
-		return w.buf.Flush()
+		return nil
 	}
 
 	// Legacy v0 format
@@ -100,7 +100,7 @@ func (w *WAL) AppendRecord(rec common.Record) error {
 	if _, err := w.buf.Write(rec.Value); err != nil {
 		return err
 	}
-	return w.buf.Flush()
+	return nil
 }
 
 func (w *WAL) Sync() error {

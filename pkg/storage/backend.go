@@ -9,10 +9,11 @@ import (
 type Backend interface {
 	Write(key common.KeyType, val common.ValueType) error
 	BatchWrite(records []common.Record) error
-	// CommitBatch writes all records with the given seqNum and RecordType (Put/Delete), then appends a TypeCommit record and Syncs. Used for transaction boundaries.
+	// CommitBatch writes all records with the given seqNum and RecordType (Put/Delete), then appends a TypeCommit. Call Sync() for durability (group commit).
 	CommitBatch(records []common.Record, seqNum uint64) error
+	// Sync flushes WAL to disk. Group commit: batch multiple BatchWrite/CommitBatch then one Sync() for high-concurrency.
+	Sync() error
 	Read(key common.KeyType) (common.ValueType, bool)
-	// LoadAll replays WAL and returns deduplicated records (latest per key) and the max SeqNum seen (for MVCC). Applies only on TypeCommit; truncates WAL on pending tx.
 	LoadAll() (records []common.Record, maxSeq uint64, err error)
 	Close()
 	Truncate() error
@@ -36,7 +37,7 @@ func (d *DiskBackend) Write(key common.KeyType, val common.ValueType) error {
 	return d.wal.Append(key, val)
 }
 
-// BatchWrite writes each record as a single-record transaction: Record (Put/Delete) then TypeCommit, then Sync. Replay will apply on each Commit.
+// BatchWrite writes each record as a single-record transaction (Record + TypeCommit). Caller should Sync() periodically for group commit.
 func (d *DiskBackend) BatchWrite(records []common.Record) error {
 	for i := range records {
 		r := &records[i]
@@ -55,6 +56,10 @@ func (d *DiskBackend) BatchWrite(records []common.Record) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (d *DiskBackend) Sync() error {
 	return d.wal.Sync()
 }
 
@@ -72,7 +77,7 @@ func (d *DiskBackend) CommitBatch(records []common.Record, seqNum uint64) error 
 	if err := d.wal.AppendRecord(commitRec); err != nil {
 		return err
 	}
-	return d.wal.Sync()
+	return nil
 }
 
 func (d *DiskBackend) Read(key common.KeyType) (common.ValueType, bool) {

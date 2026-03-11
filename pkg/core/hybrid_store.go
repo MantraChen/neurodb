@@ -34,6 +34,8 @@ type Shard struct {
 	cboModel       optimizer.RMIEstimator
 	l0SSTables     []*sstable.SSTable
 	l1SSTables     []*sstable.SSTable
+	l2SSTables     []*sstable.SSTable
+	l3SSTables     []*sstable.SSTable
 	sstables       []*sstable.SSTable
 	bloom          *structure.BloomFilter
 	compactionLock sync.Mutex
@@ -46,13 +48,17 @@ func NewShard(id int, bloomSize uint, bloomP float64) *Shard {
 		learnedIndexes: make([]corelearned.LearnedIndexInterface, 0),
 		l0SSTables:     make([]*sstable.SSTable, 0),
 		l1SSTables:     make([]*sstable.SSTable, 0),
+		l2SSTables:     make([]*sstable.SSTable, 0),
+		l3SSTables:     make([]*sstable.SSTable, 0),
 		sstables:       make([]*sstable.SSTable, 0),
 		bloom:          structure.NewBloomFilter(bloomSize, bloomP),
 	}
 }
 
 func (shard *Shard) rebuildSSTableViewLocked() {
-	combined := make([]*sstable.SSTable, 0, len(shard.l1SSTables)+len(shard.l0SSTables))
+	combined := make([]*sstable.SSTable, 0, len(shard.l3SSTables)+len(shard.l2SSTables)+len(shard.l1SSTables)+len(shard.l0SSTables))
+	combined = append(combined, shard.l3SSTables...)
+	combined = append(combined, shard.l2SSTables...)
 	combined = append(combined, shard.l1SSTables...)
 	combined = append(combined, shard.l0SSTables...)
 	shard.sstables = combined
@@ -660,25 +666,186 @@ func (hs *HybridStore) compactShard(shard *Shard) {
 	shard.mutex.Unlock()
 
 	hs.rebuildLearnedIndexFromSSTables(shard)
-	go func() {
-		// Throttle: skip if this shard was trained recently (e.g. by compaction or manual run)
-		const throttleMin = 5 * time.Minute
-		last := hs.lastPythonTrainNano[shard.id].Load()
-		if last != 0 && time.Since(time.Unix(0, int64(last))) < throttleMin {
-			log.Printf("[Python RMI] shard %d: skip (trained %.0fs ago)", shard.id, time.Since(time.Unix(0, int64(last))).Seconds())
-			return
-		}
-		hs.lastPythonTrainNano[shard.id].Store(uint64(time.Now().UnixNano()))
-		if err := hs.triggerPythonTraining(shard, outPath); err != nil {
-			log.Printf("[Python RMI] background train failed: %v", err)
-		}
-	}()
+	hs.triggerAsyncRMI(shard)
 
-	log.Printf("[Compaction] Shard %d: Merged %d -> 1 files. Disk cleaned.", shard.id, len(inputTables))
+	log.Printf("[Compaction] Shard %d: L0 merged %d -> 1 L1 file.", shard.id, len(inputTables))
 	for _, old := range inputTables {
 		old.Close()
 		os.Remove(old.Filename)
 	}
+
+	hs.maybeCompactL1ToL2(shard)
+	hs.maybeCompactL2ToL3(shard)
+}
+
+// maybeCompactL1ToL2 merges L1 SSTables into one L2 file when L1 count >= L1MaxFiles (leveled compaction).
+func (hs *HybridStore) maybeCompactL1ToL2(shard *Shard) {
+	shard.mutex.Lock()
+	l1 := len(shard.l1SSTables)
+	maxL1 := hs.conf.Storage.L1MaxFiles
+	if maxL1 <= 0 {
+		maxL1 = 10
+	}
+	if l1 < maxL1 {
+		shard.mutex.Unlock()
+		return
+	}
+	inputTables := make([]*sstable.SSTable, 0, maxL1)
+	for i := 0; i < maxL1 && i < len(shard.l1SSTables); i++ {
+		inputTables = append(inputTables, shard.l1SSTables[i])
+	}
+	shard.l1SSTables = shard.l1SSTables[len(inputTables):]
+	shard.rebuildSSTableViewLocked()
+	shard.mutex.Unlock()
+
+	mergedPath := hs.mergeSSTablesToLevel(shard, inputTables, 2)
+	if mergedPath == "" {
+		shard.mutex.Lock()
+		shard.l1SSTables = append(inputTables, shard.l1SSTables...)
+		shard.rebuildSSTableViewLocked()
+		shard.mutex.Unlock()
+		return
+	}
+	newSST, err := sstable.Open(mergedPath)
+	if err != nil {
+		os.Remove(mergedPath)
+		shard.mutex.Lock()
+		shard.l1SSTables = append(inputTables, shard.l1SSTables...)
+		shard.rebuildSSTableViewLocked()
+		shard.mutex.Unlock()
+		return
+	}
+	shard.mutex.Lock()
+	shard.l2SSTables = append(shard.l2SSTables, newSST)
+	shard.rebuildSSTableViewLocked()
+	shard.mutex.Unlock()
+	for _, old := range inputTables {
+		old.Close()
+		os.Remove(old.Filename)
+	}
+	log.Printf("[Compaction] Shard %d: L1 merged %d -> 1 L2 file.", shard.id, len(inputTables))
+	hs.triggerAsyncRMI(shard)
+}
+
+// maybeCompactL2ToL3 merges L2 SSTables into one L3 file when L2 count >= L2MaxFiles.
+func (hs *HybridStore) maybeCompactL2ToL3(shard *Shard) {
+	shard.mutex.Lock()
+	l2 := len(shard.l2SSTables)
+	maxL2 := hs.conf.Storage.L2MaxFiles
+	if maxL2 <= 0 {
+		maxL2 = 10
+	}
+	if l2 < maxL2 {
+		shard.mutex.Unlock()
+		return
+	}
+	inputTables := make([]*sstable.SSTable, 0, maxL2)
+	for i := 0; i < maxL2 && i < len(shard.l2SSTables); i++ {
+		inputTables = append(inputTables, shard.l2SSTables[i])
+	}
+	shard.l2SSTables = shard.l2SSTables[len(inputTables):]
+	shard.rebuildSSTableViewLocked()
+	shard.mutex.Unlock()
+
+	mergedPath := hs.mergeSSTablesToLevel(shard, inputTables, 3)
+	if mergedPath == "" {
+		shard.mutex.Lock()
+		shard.l2SSTables = append(inputTables, shard.l2SSTables...)
+		shard.rebuildSSTableViewLocked()
+		shard.mutex.Unlock()
+		return
+	}
+	newSST, err := sstable.Open(mergedPath)
+	if err != nil {
+		os.Remove(mergedPath)
+		shard.mutex.Lock()
+		shard.l2SSTables = append(inputTables, shard.l2SSTables...)
+		shard.rebuildSSTableViewLocked()
+		shard.mutex.Unlock()
+		return
+	}
+	shard.mutex.Lock()
+	shard.l3SSTables = append(shard.l3SSTables, newSST)
+	shard.rebuildSSTableViewLocked()
+	shard.mutex.Unlock()
+	for _, old := range inputTables {
+		old.Close()
+		os.Remove(old.Filename)
+	}
+	log.Printf("[Compaction] Shard %d: L2 merged %d -> 1 L3 file.", shard.id, len(inputTables))
+	hs.triggerAsyncRMI(shard)
+}
+
+// mergeSSTablesToLevel merges inputTables into a single SSTable at the given level; returns output path or "" on error.
+func (hs *HybridStore) mergeSSTablesToLevel(shard *Shard, inputTables []*sstable.SSTable, level int) string {
+	var iters []*sstable.Iterator
+	for _, t := range inputTables {
+		iter := t.NewIterator()
+		if iter.Next() {
+			iters = append(iters, iter)
+		} else {
+			iter.Close()
+		}
+	}
+	outFileName := fmt.Sprintf("shard-%d-l%d-%d.sst", shard.id, level, time.Now().UnixNano())
+	outPath := filepath.Join(hs.conf.Storage.Path, outFileName)
+	builder, err := sstable.NewBuilder(outPath)
+	if err != nil {
+		return ""
+	}
+	for len(iters) > 0 {
+		minKey := common.KeyType(math.MaxInt64)
+		bestIterIdx := -1
+		for i, it := range iters {
+			k := it.Key()
+			if k < minKey {
+				minKey = k
+				bestIterIdx = i
+			} else if k == minKey {
+				bestIterIdx = i
+			}
+		}
+		winner := iters[bestIterIdx]
+		builder.Add(winner.Key(), winner.Value())
+		if !winner.Next() {
+			winner.Close()
+			iters = append(iters[:bestIterIdx], iters[bestIterIdx+1:]...)
+		} else {
+			for i := 0; i < len(iters); {
+				if i == bestIterIdx {
+					i++
+					continue
+				}
+				if iters[i].Key() == minKey {
+					if !iters[i].Next() {
+						iters[i].Close()
+						iters = append(iters[:i], iters[i+1:]...)
+						if bestIterIdx > i {
+							bestIterIdx--
+						}
+						continue
+					}
+				}
+				i++
+			}
+		}
+	}
+	builder.Close()
+	return outPath
+}
+
+func (hs *HybridStore) triggerAsyncRMI(shard *Shard) {
+	go func() {
+		const throttleMin = 5 * time.Minute
+		last := hs.lastPythonTrainNano[shard.id].Load()
+		if last != 0 && time.Since(time.Unix(0, int64(last))) < throttleMin {
+			return
+		}
+		hs.lastPythonTrainNano[shard.id].Store(uint64(time.Now().UnixNano()))
+		if err := hs.triggerPythonTraining(shard, ""); err != nil {
+			log.Printf("[Python RMI] background train failed: %v", err)
+		}
+	}()
 }
 
 func (hs *HybridStore) backgroundPersist() {
@@ -689,7 +856,9 @@ func (hs *HybridStore) backgroundPersist() {
 	}
 	buffer := make([]common.Record, 0, batchSize)
 	ticker := time.NewTicker(100 * time.Millisecond)
+	syncTicker := time.NewTicker(5 * time.Millisecond) // Group commit: one Sync per 5ms for many pending writes
 	defer ticker.Stop()
+	defer syncTicker.Stop()
 
 	flush := func() {
 		if len(buffer) == 0 {
@@ -710,6 +879,10 @@ func (hs *HybridStore) backgroundPersist() {
 			}
 		case <-ticker.C:
 			flush()
+		case <-syncTicker.C:
+			if err := hs.backend.Sync(); err != nil {
+				log.Printf("WAL Sync error: %v", err)
+			}
 		case <-hs.closeCh:
 			for {
 				select {
@@ -720,6 +893,7 @@ func (hs *HybridStore) backgroundPersist() {
 					}
 				default:
 					flush()
+					_ = hs.backend.Sync()
 					return
 				}
 			}
@@ -754,12 +928,16 @@ func (hs *HybridStore) restoreSSTables() {
 		}
 		level := 1
 		tsStr := parts[2]
-		if tsStr == "l0" || tsStr == "l1" {
-			if tsStr == "l0" {
+		if len(parts) >= 4 && (tsStr == "l0" || tsStr == "l1" || tsStr == "l2" || tsStr == "l3") {
+			switch tsStr {
+			case "l0":
 				level = 0
-			}
-			if len(parts) < 4 {
-				continue
+			case "l1":
+				level = 1
+			case "l2":
+				level = 2
+			case "l3":
+				level = 3
 			}
 			tsStr = parts[3]
 		}
@@ -788,9 +966,16 @@ func (hs *HybridStore) restoreSSTables() {
 		sst, err := sstable.Open(e.path)
 		if err == nil {
 			shard := hs.shards[e.shardID]
-			if e.level == 0 {
+			switch e.level {
+			case 0:
 				shard.l0SSTables = append(shard.l0SSTables, sst)
-			} else {
+			case 1:
+				shard.l1SSTables = append(shard.l1SSTables, sst)
+			case 2:
+				shard.l2SSTables = append(shard.l2SSTables, sst)
+			case 3:
+				shard.l3SSTables = append(shard.l3SSTables, sst)
+			default:
 				shard.l1SSTables = append(shard.l1SSTables, sst)
 			}
 			shard.rebuildSSTableViewLocked()
@@ -999,12 +1184,16 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 	totalSST := 0
 	totalL0 := 0
 	totalL1 := 0
+	totalL2 := 0
+	totalL3 := 0
 	for _, s := range hs.shards {
 		s.mutex.RLock()
 		totalMem += s.mutableMem.Count()
 		totalIndex += len(s.learnedIndexes)
 		totalL0 += len(s.l0SSTables)
 		totalL1 += len(s.l1SSTables)
+		totalL2 += len(s.l2SSTables)
+		totalL3 += len(s.l3SSTables)
 		totalSST += len(s.sstables)
 		s.mutex.RUnlock()
 	}
@@ -1018,6 +1207,8 @@ func (hs *HybridStore) Stats() map[string]interface{} {
 		"learned_indexes_count": totalIndex,
 		"l0_sstable_count":      totalL0,
 		"l1_sstable_count":      totalL1,
+		"l2_sstable_count":      totalL2,
+		"l3_sstable_count":      totalL3,
 		"sstable_count":         totalSST,
 		"read_count":            reads,
 		"write_count":           writes,
@@ -1084,6 +1275,8 @@ func (hs *HybridStore) Reset() error {
 		shard.learnedIndexes = make([]corelearned.LearnedIndexInterface, 0)
 		shard.l0SSTables = make([]*sstable.SSTable, 0)
 		shard.l1SSTables = make([]*sstable.SSTable, 0)
+		shard.l2SSTables = make([]*sstable.SSTable, 0)
+		shard.l3SSTables = make([]*sstable.SSTable, 0)
 		shard.sstables = make([]*sstable.SSTable, 0)
 		shard.bloom = structure.NewBloomFilter(hs.conf.System.BloomSize, hs.conf.System.BloomFalseProb)
 

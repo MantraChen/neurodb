@@ -86,6 +86,7 @@
         .log .ok { color: #6a6; }
         .foot { margin-top: 12px; color: #444; font-size: 11px; }
         .foot a { color: #666; }
+        .badge { color: #4a4; font-size: 10px; margin-left: 8px; }
     </style>
 </head>
 <body>
@@ -95,8 +96,8 @@
         Active Txs: <span class="v" id="activeTxs">--</span> |
         GC Watermark: <span class="v" id="gcWm">--</span> |
         MemTable: <span class="v" id="memVal">0</span> |
-        L0/L1: <span class="v" id="sstVal">0/0</span> |
-        Indexes: <span class="v" id="modelVal">0</span> |
+        L0/L1/L2/L3: <span class="v" id="sstVal">0/0/0/0</span> |
+        RMI: <span class="v" id="modelVal">0</span> |
         Shards: <span class="v" id="shardVal">--</span>
     </div>
 
@@ -124,6 +125,7 @@
         <a href="#" onclick="backupSnapshot(); return false;">Backup (tar.gz)</a> |
         <a href="/api/export" download="neurodb_model.csv">Export CSV</a> |
         <a href="#" onclick="resetDB(); return false;">Reset DB</a>
+        <span class="badge">NeuroDB 1.0 · LSM + RMI + MVCC + Group Commit</span>
     </div>
 
     <script>
@@ -144,7 +146,7 @@
                 if (!res.ok) return;
                 const d = await res.json();
                 document.getElementById('memVal').textContent = (d.memtable_record_count || 0).toLocaleString();
-                document.getElementById('sstVal').textContent = (d.l0_sstable_count || 0) + '/' + (d.l1_sstable_count || 0);
+                document.getElementById('sstVal').textContent = (d.l0_sstable_count || 0) + '/' + (d.l1_sstable_count || 0) + '/' + (d.l2_sstable_count || 0) + '/' + (d.l3_sstable_count || 0);
                 document.getElementById('modelVal').textContent = d.learned_indexes_count || 0;
                 document.getElementById('shardVal').textContent = d.shards_active ?? '--';
                 document.getElementById('seqNum').textContent = d.global_seq_num != null ? d.global_seq_num : '--';
@@ -270,7 +272,7 @@
             } catch (e) { log('Reset failed: ' + e, 'err'); }
         }
 
-        log('NeuroDB ready. LSM-Tree + RMI + MVCC.', '');
+        log('NeuroDB ready. L0/L1/L2/L3 leveled compaction, RMI, MVCC, Group Commit.', '');
     </script>
 </body>
 </html>
