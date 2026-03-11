@@ -276,3 +276,50 @@ func TestCommitWriteBatch(t *testing.T) {
 		t.Fatalf("Get(20): ok=%v v=%q", ok, string(v))
 	}
 }
+
+func TestTxReadYourOwnWrites(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Storage: config.StorageConfig{
+			Path:                   tmpDir,
+			WalBufferSize:          8,
+			MemTableFlushThreshold: 10000,
+			CompactionThreshold:    4,
+			WalBatchSize:           4,
+		},
+		System: config.SystemConfig{
+			ShardCount:     1,
+			BloomSize:      1024,
+			BloomFalseProb: 0.01,
+		},
+	}
+	hs := NewHybridStore(cfg)
+	t.Cleanup(hs.Close)
+
+	// Commit initial key
+	hs.Put(1, []byte("initial"))
+
+	tx, err := hs.BeginTx()
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	// Read committed value
+	if v, ok := tx.Get(1); !ok || !bytes.Equal(v, []byte("initial")) {
+		t.Fatalf("tx.Get(1) before put: ok=%v v=%q", ok, string(v))
+	}
+	// Write in tx (not committed yet)
+	if err := tx.Put(1, []byte("in-tx")); err != nil {
+		t.Fatalf("tx.Put: %v", err)
+	}
+	// Read-your-own-writes: must see "in-tx"
+	if v, ok := tx.Get(1); !ok || !bytes.Equal(v, []byte("in-tx")) {
+		t.Fatalf("tx.Get(1) after put (read own write): ok=%v v=%q", ok, string(v))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	// After commit, store sees new value
+	if v, ok := hs.Get(1); !ok || !bytes.Equal(v, []byte("in-tx")) {
+		t.Fatalf("Get(1) after commit: ok=%v v=%q", ok, string(v))
+	}
+}

@@ -16,17 +16,47 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type Server struct {
 	store       *core.HybridStore
-	ingestCount atomic.Int64 // use atomic.Int64 for correct alignment on 32-bit/ARM
+	ingestCount atomic.Int64
+	sessionMu   sync.Mutex
+	sessions    map[string]*core.Tx
+	sessionSeq  atomic.Uint64
 }
 
 func NewServer(store *core.HybridStore) *Server {
-	return &Server{store: store}
+	return &Server{store: store, sessions: make(map[string]*core.Tx)}
+}
+
+func (s *Server) getSessionTx(sid string) *core.Tx {
+	if sid == "" {
+		return nil
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	return s.sessions[sid]
+}
+
+func (s *Server) putSessionTx(tx *core.Tx) string {
+	sid := fmt.Sprintf("s%d", s.sessionSeq.Add(1))
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	s.sessions[sid] = tx
+	return sid
+}
+
+func (s *Server) clearSessionTx(sid string) {
+	if sid == "" {
+		return
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	delete(s.sessions, sid)
 }
 
 // recoverMiddleware recovers panics and returns 500 JSON so one handler panic does not kill the process.
@@ -536,37 +566,74 @@ func (s *Server) handleSQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Query string `json:"query"`
+		Query     string `json:"query"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"error": "invalid body"})
 		return
 	}
-	stmt, err := sql.Parse(req.Query)
+	kind, selectStmt, err := sql.ParseStmt(req.Query)
 	if err != nil {
 		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
 		return
 	}
-	start, end := stmt.TableKeyRange()
-	records := s.store.Scan(common.KeyType(start), common.KeyType(end))
-	rows := make([]map[string]interface{}, 0, len(records))
-	for _, rec := range records {
-		if !stmt.MatchID(int64(rec.Key)) {
-			continue
+
+	tx := s.getSessionTx(req.SessionID)
+	switch kind {
+	case sql.StmtBegin:
+		newTx, err := s.store.BeginTx()
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error()})
+			return
 		}
-		rows = append(rows, map[string]interface{}{
-			"id":   rec.Key,
-			"data": string(rec.Value),
-		})
-		if stmt.Limit >= 0 && len(rows) >= stmt.Limit {
-			break
+		sid := s.putSessionTx(newTx)
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "session_id": sid})
+		return
+	case sql.StmtCommit:
+		if tx != nil {
+			_ = tx.Commit()
+			s.clearSessionTx(req.SessionID)
 		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		return
+	case sql.StmtRollback:
+		if tx != nil {
+			_ = tx.Rollback()
+			s.clearSessionTx(req.SessionID)
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+		return
+	case sql.StmtSelect:
+		stmt := selectStmt
+		start, end := stmt.TableKeyRange()
+		var records []common.Record
+		if tx != nil {
+			records = tx.Scan(common.KeyType(start), common.KeyType(end))
+		} else {
+			records = s.store.Scan(common.KeyType(start), common.KeyType(end))
+		}
+		rows := make([]map[string]interface{}, 0, len(records))
+		for _, rec := range records {
+			if !stmt.MatchID(int64(rec.Key)) {
+				continue
+			}
+			rows = append(rows, map[string]interface{}{
+				"id":   rec.Key,
+				"data": string(rec.Value),
+			})
+			if stmt.Limit >= 0 && len(rows) >= stmt.Limit {
+				break
+			}
+		}
+		resp := map[string]interface{}{"table": stmt.Table, "count": len(rows), "rows": rows}
+		if req.SessionID != "" {
+			resp["session_id"] = req.SessionID
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"table": stmt.Table,
-		"count": len(rows),
-		"rows":  rows,
-	})
+	json.NewEncoder(w).Encode(map[string]interface{}{"error": "unknown statement"})
 }
 
 func resolveStaticDir() string {

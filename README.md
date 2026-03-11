@@ -192,7 +192,7 @@ Learned Index point lookup and range scan do **not** search the full array. Afte
 * **Phase 1 (done)**: Global SeqNum, MemTable + read view, WAL v1 with SeqNum, GC watermark placeholder. SST/Learned index still single version per key (committed state visible to all).
 * **Phase 2**: Leveled compaction L1→L2→L3…; cascading RMI training (async lagged training for deep levels, hot-reload when ready).
 * **Phase 3 (done)**: WAL transaction boundaries: record types **TypePut (0x01), TypeDelete (0x02), TypeCommit (0x04)** in v1 header; **WriteBatch** + **Commit(wb)** with one SeqNum per batch; **recoverFromWAL** applies only on TypeCommit and **truncates WAL** (undo) when a pending transaction is found at EOF. Single Put/Delete still go through the same WAL (each written as a single-record transaction with trailing TypeCommit). **Group commit** (batch concurrent commits into one fsync) is left as a future optimization.
-* **Phase 4**: ACID transaction API (BEGIN/COMMIT/ROLLBACK in SQL and Go SDK); register/unregister read view for GC.
+* **Phase 4 (done)**: **ACID transaction API**: **Tx** object in `pkg/core/transaction.go` (BeginTx, Put/Get/Delete, Commit/Rollback) with **read-your-own-writes** (WriteBatch.GetFromBatch + GetWithReadView). **TxManager** tracks active read views and drives **SetOldestActiveReadView** for GC. **SQL**: BEGIN, COMMIT, ROLLBACK (and START TRANSACTION) via **ParseStmt**; **MySQL Wire** and **HTTP /api/sql** use per-connection or per-session tx (HTTP uses optional `session_id` in body to hold a transaction across requests).
 
 ## Citation
 

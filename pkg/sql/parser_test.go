@@ -4,6 +4,34 @@ import (
 	"testing"
 )
 
+func TestParseStmtTx(t *testing.T) {
+	tests := []struct {
+		sql  string
+		kind StmtKind
+	}{
+		{"BEGIN", StmtBegin},
+		{"begin", StmtBegin},
+		{"START TRANSACTION", StmtBegin},
+		{"COMMIT", StmtCommit},
+		{"commit", StmtCommit},
+		{"ROLLBACK", StmtRollback},
+		{"rollback", StmtRollback},
+	}
+	for _, tt := range tests {
+		kind, stmt, err := ParseStmt(tt.sql)
+		if err != nil {
+			t.Errorf("ParseStmt(%q): %v", tt.sql, err)
+			continue
+		}
+		if kind != tt.kind {
+			t.Errorf("ParseStmt(%q): kind=%v, want %v", tt.sql, kind, tt.kind)
+		}
+		if stmt != nil {
+			t.Errorf("ParseStmt(%q): expected nil stmt", tt.sql)
+		}
+	}
+}
+
 func TestParseSelect(t *testing.T) {
 	tests := []struct {
 		sql   string

@@ -71,6 +71,7 @@ type HybridStore struct {
 	seqNum atomic.Uint64
 	// oldestActiveReadView: only versions with SeqNum < this can be GC'd during compaction. 0 = no GC.
 	oldestActiveReadView atomic.Uint64
+	txManager            *TxManager
 }
 
 func NewHybridStore(cfg *config.Config) *HybridStore {
@@ -80,12 +81,13 @@ func NewHybridStore(cfg *config.Config) *HybridStore {
 
 	walPath := filepath.Join(cfg.Storage.Path, "neuro.db")
 	hs := &HybridStore{
-		backend: storage.NewDiskBackend(walPath),
-		stats:   monitor.NewWorkloadStats(),
-		writeCh: make(chan common.Record, cfg.Storage.WalBufferSize),
-		closeCh: make(chan struct{}),
-		shards:  make([]*Shard, cfg.System.ShardCount),
-		conf:    cfg,
+		backend:  storage.NewDiskBackend(walPath),
+		stats:    monitor.NewWorkloadStats(),
+		writeCh:  make(chan common.Record, cfg.Storage.WalBufferSize),
+		closeCh:  make(chan struct{}),
+		shards:   make([]*Shard, cfg.System.ShardCount),
+		conf:     cfg,
+		txManager: newTxManager(),
 	}
 
 	for i := 0; i < cfg.System.ShardCount; i++ {
@@ -167,6 +169,14 @@ func (hs *HybridStore) CurrentSeqNum() uint64 {
 // 0 = no GC of old versions. Call this when starting a transaction (register) and when ending (unregister).
 func (hs *HybridStore) SetOldestActiveReadView(watermark uint64) {
 	hs.oldestActiveReadView.Store(watermark)
+}
+
+// updateGCWatermark sets oldestActiveReadView from TxManager.MinActiveReadView (called after Register/Unregister).
+func (hs *HybridStore) updateGCWatermark() {
+	if hs.txManager == nil {
+		return
+	}
+	hs.SetOldestActiveReadView(hs.txManager.MinActiveReadView())
 }
 
 func (hs *HybridStore) Put(key common.KeyType, val common.ValueType) {

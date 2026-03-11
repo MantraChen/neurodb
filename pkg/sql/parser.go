@@ -7,6 +7,39 @@ import (
 	"strings"
 )
 
+// StmtKind is the type of parsed statement (for BEGIN/COMMIT/ROLLBACK/SELECT).
+type StmtKind int
+
+const (
+	StmtSelect StmtKind = iota
+	StmtBegin
+	StmtCommit
+	StmtRollback
+)
+
+// ParseStmt parses a statement and returns kind and optional SelectStmt. Used for transaction and SELECT dispatch.
+func ParseStmt(s string) (kind StmtKind, stmt *SelectStmt, err error) {
+	orig := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), ";"))
+	if orig == "" {
+		return StmtSelect, nil, errors.New("empty query")
+	}
+	upper := strings.ToUpper(orig)
+	if upper == "BEGIN" || upper == "START TRANSACTION" {
+		return StmtBegin, nil, nil
+	}
+	if upper == "COMMIT" {
+		return StmtCommit, nil, nil
+	}
+	if upper == "ROLLBACK" {
+		return StmtRollback, nil, nil
+	}
+	stmt, err = Parse(s)
+	if err != nil {
+		return StmtSelect, nil, err
+	}
+	return StmtSelect, stmt, nil
+}
+
 // SelectStmt represents a parsed SELECT * FROM table statement.
 type SelectStmt struct {
 	Table string

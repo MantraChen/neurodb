@@ -6,11 +6,27 @@ import (
 	"neurodb/pkg/common"
 	"neurodb/pkg/core"
 	"neurodb/pkg/sql"
+	"neurodb/pkg/sql/executor"
 )
 
 // Server is a MySQL Wire Protocol gateway; forwards SQL to pkg/sql and returns result sets.
 type Server struct {
 	store *core.HybridStore
+}
+
+// Session holds per-connection state (including active transaction).
+type Session struct {
+	conn  net.Conn
+	store *core.HybridStore
+	tx    *core.Tx
+}
+
+// storeForRead returns the Store to use for SELECT (tx if in transaction, else store).
+func (s *Session) storeForRead() executor.Store {
+	if s.tx != nil {
+		return s.tx
+	}
+	return s.store
 }
 
 // NewServer creates the MySQL protocol gateway.
@@ -40,24 +56,19 @@ func (s *Server) Start(addr string) error {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// 1. Send MySQL handshake packet
 	if err := s.sendHandshake(conn); err != nil {
 		log.Printf("[MySQL] Handshake error: %v", err)
 		return
 	}
-
-	// 2. Receive auth packet
 	if err := s.readAuth(conn); err != nil {
 		log.Printf("[MySQL] Auth error: %v", err)
 		return
 	}
-
-	// 3. Send OK, enter command phase
 	if err := s.writeOK(conn); err != nil {
 		return
 	}
 
-	// 4. Command loop: parse COM_QUERY, pass SQL to pkg/sql, wrap result as Resultset
+	sess := &Session{conn: conn, store: s.store, tx: nil}
 	for {
 		query, err := s.readCommand(conn)
 		if err != nil {
@@ -66,7 +77,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		if query == "" {
 			continue
 		}
-		rows, table, count := s.executeSQL(query)
+		rows, table, count := s.executeSQL(sess, query)
 		if err := s.writeResultset(conn, table, count, rows); err != nil {
 			return
 		}
@@ -102,26 +113,48 @@ func (s *Server) readCommand(conn net.Conn) (string, error) {
 	return string(buf[5:n]), nil
 }
 
-func (s *Server) executeSQL(q string) (rows []map[string]interface{}, table string, count int) {
-	stmt, err := sql.Parse(q)
+func (s *Server) executeSQL(sess *Session, q string) (rows []map[string]interface{}, table string, count int) {
+	kind, selectStmt, err := sql.ParseStmt(q)
 	if err != nil {
 		return nil, "", 0
 	}
-	table = stmt.Table
-	start, end := stmt.TableKeyRange()
-	records := s.store.Scan(common.KeyType(start), common.KeyType(end))
-	count = 0
-	for _, r := range records {
-		if !stmt.MatchID(int64(r.Key)) {
-			continue
+
+	switch kind {
+	case sql.StmtBegin:
+		sess.tx, _ = sess.store.BeginTx()
+		return nil, "", 0
+	case sql.StmtCommit:
+		if sess.tx != nil {
+			_ = sess.tx.Commit()
+			sess.tx = nil
 		}
-		if stmt.Limit >= 0 && count >= stmt.Limit {
-			break
+		return nil, "", 0
+	case sql.StmtRollback:
+		if sess.tx != nil {
+			_ = sess.tx.Rollback()
+			sess.tx = nil
 		}
-		rows = append(rows, map[string]interface{}{"id": r.Key, "value": r.Value})
-		count++
+		return nil, "", 0
+	case sql.StmtSelect:
+		stmt := selectStmt
+		table = stmt.Table
+		start, end := stmt.TableKeyRange()
+		store := sess.storeForRead()
+		records := store.Scan(common.KeyType(start), common.KeyType(end))
+		count = 0
+		for _, r := range records {
+			if !stmt.MatchID(int64(r.Key)) {
+				continue
+			}
+			if stmt.Limit >= 0 && count >= stmt.Limit {
+				break
+			}
+			rows = append(rows, map[string]interface{}{"id": r.Key, "value": r.Value})
+			count++
+		}
+		return rows, table, len(rows)
 	}
-	return rows, table, len(rows)
+	return nil, "", 0
 }
 
 func (s *Server) writeResultset(conn net.Conn, table string, count int, rows []map[string]interface{}) error {

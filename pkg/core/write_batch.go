@@ -59,3 +59,17 @@ func (wb *WriteBatch) Len() int {
 func (wb *WriteBatch) Clear() {
 	wb.ops = wb.ops[:0]
 }
+
+// GetFromBatch returns the latest value for key in the batch (read-your-own-writes). Scans ops in reverse; Put returns value, Delete returns (nil, true). ok=true means key was found in batch (may be deleted).
+func (wb *WriteBatch) GetFromBatch(key common.KeyType) (value common.ValueType, ok bool) {
+	for i := len(wb.ops) - 1; i >= 0; i-- {
+		if wb.ops[i].key != key {
+			continue
+		}
+		if wb.ops[i].op == OpDelete {
+			return nil, true
+		}
+		return wb.ops[i].value, true
+	}
+	return nil, false
+}
