@@ -122,6 +122,7 @@ def train_rmi(keys: np.ndarray, fanout: int = 256):
             continue
         leaf = leaves[b]
         local_pred = leaf["slope"] * key_f + leaf["intercept"]
+        global_pred = bucket_starts[b] + int(round(local_pred))
         err = i - global_pred
         min_err = min(min_err, err)
         max_err = max(max_err, err)

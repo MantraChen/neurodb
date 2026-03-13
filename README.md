@@ -1,78 +1,126 @@
 # NeuroDB
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Language: Go](https://img.shields.io/badge/Language-Go_89.8%25-00ADD8.svg)](#)
-[![Language: Python](https://img.shields.io/badge/Language-Python_4.7%25-blue.svg)](#)
-[![Status: Feature Complete](https://img.shields.io/badge/Status-Feature_Complete-success.svg)](#)
+[![Language: Go](https://img.shields.io/badge/Language-Go-00ADD8.svg)](#)
+[![Language: Python](https://img.shields.io/badge/Language-Python-blue.svg)](#)
 
-NeuroDB is an experimental, high-performance SQL database engine bridging LSM-Tree storage architecture with AI Learned Indexes (RMI) [2]. It combines low read/write amplification, compact storage, and O(1) range scans [2].
+NeuroDB is an experimental, high-performance SQL database engine that combines LSM-Tree storage with **AI-learned indexes (RMI)**. It offers low read/write amplification, compact storage, and fast range scans. The codebase is **ready to fork and adapt**: use it for research, benchmarking, or as a base to train and extend your own project—take the code, modify it, and build on it.
 
-By offloading index training to a Python Sidecar and leveraging a Go-based kernel for execution, NeuroDB introduces an AI-driven Query Optimizer and MVCC-backed ACID transactions into a modern database architecture [2]. The codebase is currently feature-complete and is highly suitable for research, benchmarking, and systemic integration [1].
+---
 
-## Core Architecture & Features
+## Features
 
-### 1. AI-Native Query Execution
-* **Learned SSTable**: Replaces traditional block indexes with a Recursive Model Index (RMI) mounted directly at the SSTable layer [3].
-* **Python Sidecar Trainer**: Asynchronous ML training during L0 -> L1 compaction [3]. Python exports .li models, while the Go kernel performs ultra-fast inferences [3].
-* **Strict Error Bounds**: Eliminates global fallback searches [3]. Binary search is strictly bounded to the model's [pos - min_error, pos + max_error] slice, breaking the 0.7x latency bottleneck of naive learned indexes [3].
-* **CBO (Cost-Based Optimizer)**: Leverages the CDF properties of the RMI for precise O(1) row count estimations [3].
+- **Learned SSTable**: Recursive Model Index (RMI) at the SSTable layer instead of traditional block indexes.
+- **Python RMI trainer**: Async ML training during L0→L1 compaction; Python exports `.li` models, Go runs inference.
+- **Bounded fallback search**: Binary search limited to `[pos - min_error, pos + max_error]` per leaf (no global scan).
+- **Cost-based optimizer (CBO)**: Uses RMI CDF for O(1) row count estimation.
+- **ACID + MVCC**: Snapshot isolation, read-your-own-writes, durable WAL with undo/truncate recovery.
+- **LSM storage**: Leveled compaction (L0→L1→L2→L3), tombstone GC, group commit, optional Z-Order spatial indexing.
 
-### 2. ACID Transactions & MVCC
-* **Snapshot Isolation**: Implemented via a UserKey + SeqNum InternalKey structure and a robust TxManager [4].
-* **Read-Your-Own-Writes**: Fully supported transaction contexts guaranteeing isolation before COMMIT [4].
-* **Durable Write-Ahead Log (WAL)**: Includes v1 format persisting SeqNum, TypePut/Delete/Commit boundaries, and robust Undo/Truncate recovery for pending transactions during crashes [4].
+---
 
-### 3. Industrial-Grade Storage (LSM-Tree)
-* **Deep Leveled Compaction**: Sharded MemTables flush to L0, then L0->L1, L1->L2, L2->L3 with configurable level limits [4]. Features cascading async RMI training after each level merge [4].
-* **Tombstone GC**: Governed by the SetOldestActiveReadView watermark to safely garbage collect physical data only when it's no longer needed by active transactions [4].
-* **Group Commit**: Batched WAL writes with a single Sync() per 5ms window for high-concurrency throughput [4].
-* **Multi-Dimensional Spatial Indexing**: Built-in Z-Order encoder allowing joint spatial indexes to be seamlessly processed by the 1D Learned Index [4].
+## Requirements
 
-## Quick Start
+- **Go** 1.24+
+- **Python** 3.x (for RMI training; optional if you only use pre-trained `.li` files)
+- Python deps: `numpy`, `scikit-learn` (see `python/requirements.txt`)
 
-### Installation & Run
+---
+
+## Installation & Run
+
 ```bash
-# Clone the repository and start the NeuroDB server
 git clone https://github.com/MantraChen/neurodb.git
 cd neurodb
 go run cmd/server/main.go -config configs/neuro.yaml
 ```
-SDK Transaction Example
-```bash
-NeuroDB provides a resilient Go client SDK with native transaction support
-:
+
+Default config path is `configs/neuro.yaml`. Copy from `configs/config.example.yaml` if needed.
+
+---
+
+## Quick Start: SDK Transaction
+
+NeuroDB provides a Go client SDK with transaction support:
+
+```go
 // Begin an isolated transaction
 tx, _ := store.BeginTx()
 
-// Write operations (Isolated in WriteBatch)
+// Writes are isolated in a WriteBatch
 tx.Put([]byte("user_100"), []byte("Howie"))
 
-// Read-Your-Own-Writes within the transaction
-val, _ := tx.Get([]byte("user_100")) 
+// Read-your-own-writes within the transaction
+val, _ := tx.Get([]byte("user_100"))
 
-// Commit to make changes globally visible
-tx.Commit() 
+// Commit to make changes visible
+tx.Commit()
 ```
+
+---
+
+## Training Your Own RMI (Python)
+
+The project is designed so you can **train and plug in your own models**. The Python sidecar trains a two-layer RMI and exports a `.li` (JSON) file; the Go engine loads it for inference.
+
+- **Input**: CSV of sorted keys (one key per line), e.g. exported by Go during compaction or prepared by you.
+- **Output**: `.li` file with root/leaf weights and per-leaf error bounds.
+
+From the project root:
+
+```bash
+pip install -r python/requirements.txt
+python3 python/train_rmi.py --input keys.csv --output shard-0.li.new --fanout 256
+```
+
+See `ai_trainer/README.md` and `pkg/core/hybrid_store.go` (`triggerPythonTraining`) for integration. You can change fanout, model type, or replace the trainer with your own script—the Go side only needs the `.li` format.
+
+---
+
+## Configuration
+
+Example config (copy `configs/config.example.yaml` to `configs/neuro.yaml`):
+
+| Section   | Key                       | Description                          |
+|-----------|---------------------------|--------------------------------------|
+| `server`  | `addr`, `tcp_addr`        | HTTP dashboard/REST and TCP binary   |
+| `storage` | `path`, `wal_*`, `memtable_flush_threshold`, `compaction_threshold` | Data dir and LSM tuning |
+| `system`  | `shard_count`, `bloom_*`  | Shards and Bloom filter settings     |
+
+---
+
 ## Network & SQL Gateway
 
-NeuroDB provides versatile connectivity through multiple supported protocols, ensuring seamless integration into varied architectural ecosystems [1]:
+- **MySQL wire protocol**: Use standard MySQL clients and ORMs.
+- **Custom TCP binary**: Low-latency protocol for the Go SDK.
+- **REST API**: Stateless HTTP with session-based transactions (`BEGIN` / `COMMIT` / `ROLLBACK` via `session_id`).
 
-* **MySQL Wire Protocol**: Enables native compatibility with standard MySQL clients, ORMs, and ecosystem tools [1].
-* **Custom TCP Binary**: A lightweight, zero-copy communication protocol optimized for high-frequency, low-latency database operations [1].
-* **RESTful HTTP API**: Stateless interface that supports cross-request ACID transactions (`BEGIN`, `COMMIT`, `ROLLBACK`) via dedicated `session_id` tracking [1].
+---
 
 ## Management Dashboard
 
-A minimalist, terminal-style web interface is exposed at `http://localhost:8080` [1]. It provides real-time observability and interactive querying capabilities, featuring:
+A terminal-style web UI is available at `http://localhost:8080` (configurable):
 
-* **Real-time Metrics**: Visibility into current `Global SeqNum`, `Active Txs`, and the `GC Watermark` [1].
-* **Interactive SQL Console**: A multiline SQL execution environment fully supporting transaction boundaries (`BEGIN; ... COMMIT;`) [1].
-* **AI Diagnostics**: Live visualization of the Learned Index Error Heatmap to monitor RMI inference precision [1].
+- **Metrics**: Global SeqNum, active transactions, GC watermark.
+- **SQL console**: Multiline SQL with transaction boundaries.
+- **AI diagnostics**: Learned index error heatmap for RMI precision.
+
+---
+
+## Project Layout (relevant to “train your own”)
+
+- `cmd/server/main.go` — Server entrypoint.
+- `pkg/core/hybrid_store.go` — LSM + RMI integration; triggers Python training and loads `.li`.
+- `pkg/index/learned/` — RMI load and inference (PredictWithBounds).
+- `python/train_rmi.py` — Default RMI trainer; replace or adapt for your own models.
+- `ai_trainer/` — Wrapper and docs for the Python trainer.
+
+---
 
 ## License & Citation
 
-NeuroDB is distributed under the **MIT License**. Copyright (c) 2026 HowieSun [2].
+NeuroDB is under the **MIT License**. Copyright (c) 2026 HowieSun.
 
-For academic and research purposes, please cite this project as follows [2]:
+For academic use, you may cite:
 
-> *NeuroDB: An Adaptive, Learned-Index Powered Relational Database Engine.* [2]
+> *NeuroDB: An Adaptive, Learned-Index Powered Relational Database Engine.*
